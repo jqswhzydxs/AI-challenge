@@ -20,6 +20,9 @@ import com.xq.mapper.EnergyPlanMapper;
 import com.xq.model.entity.EnergyPlan;
 import com.xq.model.entity.EnergyPlanDetail;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -33,6 +36,9 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
     @Override
     public Result<TaskVO> generate(EnergyPlanGenerateDTO dto) {
+        LocalDate planDate = LocalDate.parse(dto.getPlanDate());
+        LocalDateTime planStart = planDate.atStartOfDay();
+
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.ENERGY_PLAN);
         task.setStatus(TaskStatus.PENDING);
@@ -41,15 +47,42 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         task.setFrontendRequestJson(JSON.toJSONString(dto));
         algorithmTaskMapper.insert(task);
 
-        // Mock: 模拟异步
+        EnergyPlan plan = new EnergyPlan();
+        plan.setTaskId(task.getId());
+        plan.setPlanDate(planDate);
+        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setObjective(dto.getObjective());
+        plan.setElectricPriceMode(dto.getElectricPriceMode());
+        plan.setTimeInterval(60);
+        plan.setElectricityCost(new BigDecimal("23500.00"));
+        plan.setSteamCost(new BigDecimal("12800.00"));
+        plan.setTotalEnergyCost(plan.getElectricityCost().add(plan.getSteamCost()));
+        energyPlanMapper.insert(plan);
+
+        for (int hour = 0; hour < 24; hour++) {
+            EnergyPlanDetail detail = new EnergyPlanDetail();
+            detail.setPlanId(plan.getId());
+            detail.setTimestamp(planStart.plusHours(hour));
+            detail.setEquipmentId(1L);
+            detail.setOutput(new BigDecimal("80.00").add(new BigDecimal(hour % 5)));
+            detail.setElectricityConsumption(new BigDecimal("980.00").add(new BigDecimal(hour * 8L)));
+            detail.setSteamConsumption(new BigDecimal("210.00").add(new BigDecimal(hour % 6)));
+            detail.setCarbonEmissionTco2(new BigDecimal("12.50").add(new BigDecimal(hour).multiply(new BigDecimal("0.03"))));
+            detail.setEnergyCost(new BigDecimal("1450.00").add(new BigDecimal(hour * 12L)));
+            energyPlanDetailMapper.insert(detail);
+        }
+
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
+        task.setResultId(plan.getId());
         algorithmTaskMapper.updateById(task);
 
         TaskVO vo = TaskVO.builder()
                 .taskId(task.getId())
                 .taskType(task.getTaskType())
                 .status(task.getStatus())
+                .progress(task.getProgress())
+                .resultId(task.getResultId())
                 .build();
         return Result.ok("能源运行任务已创建", vo);
     }

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -26,7 +27,7 @@ public class ProductionSchedulePlan {
     /** 方案名称 */
     private String scheduleName;
     /** 排产日期 */
-    private LocalDateTime scheduleDate;
+    private LocalDate scheduleDate;
     /** 计划开始时间 */
     private LocalDateTime planStartTime;
     /** 计划跨度，当前为 24 */

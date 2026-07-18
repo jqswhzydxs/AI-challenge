@@ -5,9 +5,9 @@ spring:
   application:
     name: ai-energy-optimization
   datasource:
-    url: jdbc:mysql://localhost:3306/ai_energy?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
-    username: root
-    password: 50104657
+    url: ${DB_URL:jdbc:mysql://localhost:3306/challenge_cup_energy?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:50104657}
     driver-class-name: com.mysql.cj.jdbc.Driver
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss

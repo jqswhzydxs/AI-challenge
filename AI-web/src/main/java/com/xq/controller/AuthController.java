@@ -6,6 +6,7 @@ import com.xq.model.vo.LoginVO;
 import com.xq.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,7 +29,19 @@ public class AuthController {
 
     @Operation(summary = "用户登录", description = "使用用户名和密码登录系统，返回 JWT token 和用户信息")
     @PostMapping("/login")
-    public Result<LoginVO> login(@RequestBody LoginDTO loginDTO) {
+    public Result<LoginVO> login(@Valid @RequestBody LoginDTO loginDTO) {
         return authService.login(loginDTO);
+    }
+
+    @Operation(summary = "当前用户信息", description = "根据 Authorization 中的 Bearer token 返回当前登录用户信息")
+    @GetMapping("/userinfo")
+    public Result<LoginVO> userInfo(@RequestHeader(value = "Authorization", required = false) String authorization) {
+        return authService.currentUser(authorization);
+    }
+
+    @Operation(summary = "退出登录", description = "JWT 无状态退出，前端清理本地 token 即可")
+    @PostMapping("/logout")
+    public Result<Void> logout() {
+        return authService.logout();
     }
 }

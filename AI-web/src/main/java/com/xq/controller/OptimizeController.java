@@ -8,6 +8,7 @@ import com.xq.service.JointOptimizationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,7 +33,7 @@ public class OptimizeController {
 
     @Operation(summary = "创建协同优化任务", description = "发起生产-能源联合协同优化任务，返回任务 ID")
     @PostMapping("/joint/generate")
-    public Result<TaskVO> generate(@RequestBody JointOptimizeDTO dto) {
+    public Result<TaskVO> generate(@Valid @RequestBody JointOptimizeDTO dto) {
         return optimizeService.generate(dto);
     }
 

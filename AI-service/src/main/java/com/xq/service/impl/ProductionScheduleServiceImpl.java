@@ -9,7 +9,6 @@ import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionScheduleService;
-import com.xq.service.TaskService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,9 +23,9 @@ import com.xq.model.entity.ProductionScheduleDetail;
 import com.alibaba.fastjson2.JSON;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -38,11 +37,14 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final ProductionSchedulePlanMapper schedulePlanMapper;
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
-    private final TaskService taskService;
 
     @Override
     @Transactional
     public Result<TaskVO> generate(ScheduleGenerateDTO dto) {
+        LocalDate scheduleDate = LocalDate.parse(dto.getScheduleDate());
+        int planHorizon = dto.getPlanHorizon() != null ? dto.getPlanHorizon() : 24;
+        LocalDateTime planStart = scheduleDate.atStartOfDay();
+
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
         task.setStatus(TaskStatus.PENDING);
@@ -51,15 +53,48 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         task.setFrontendRequestJson(JSON.toJSONString(dto));
         algorithmTaskMapper.insert(task);
 
-        // Mock: 模拟异步调用算法
+        ProductionSchedulePlan plan = new ProductionSchedulePlan();
+        plan.setTaskId(task.getId());
+        plan.setScheduleName(scheduleDate + " 排产方案");
+        plan.setScheduleDate(scheduleDate);
+        plan.setPlanStartTime(planStart);
+        plan.setPlanHorizon(planHorizon);
+        plan.setPlanUnit(dto.getPlanUnit() != null ? dto.getPlanUnit() : "hour");
+        plan.setDataGranularity(dto.getDataGranularity() != null ? dto.getDataGranularity() : "1 hour");
+        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setObjective(dto.getObjective());
+        plan.setElecCoefficient(getDecimal(dto.getConstraints(), "elecCoefficient", new BigDecimal("42.00")));
+        plan.setTotalDemand(new BigDecimal(planHorizon).multiply(new BigDecimal("100.00")));
+        plan.setTotalProduction(plan.getTotalDemand());
+        plan.setTotalEnergy(plan.getTotalProduction().multiply(plan.getElecCoefficient()));
+        plan.setRawPlanJson(JSON.toJSONString(dto));
+        schedulePlanMapper.insert(plan);
+
+        for (int hour = 0; hour < planHorizon; hour++) {
+            BigDecimal production = new BigDecimal("100.00").add(new BigDecimal(hour % 4).multiply(new BigDecimal("5.00")));
+            ProductionScheduleDetail detail = new ProductionScheduleDetail();
+            detail.setScheduleId(plan.getId());
+            detail.setHourIndex(hour);
+            detail.setStartTime(planStart.plusHours(hour));
+            detail.setEndTime(planStart.plusHours(hour + 1L));
+            detail.setDemand(production);
+            detail.setProduction(production);
+            detail.setElecForecast(production.multiply(plan.getElecCoefficient()));
+            detail.setConflictFlag(0);
+            scheduleDetailMapper.insert(detail);
+        }
+
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
+        task.setResultId(plan.getId());
         algorithmTaskMapper.updateById(task);
 
         TaskVO vo = TaskVO.builder()
                 .taskId(task.getId())
                 .taskType(task.getTaskType())
                 .status(task.getStatus())
+                .progress(task.getProgress())
+                .resultId(task.getResultId())
                 .build();
         return Result.ok("排产任务已创建", vo);
     }
@@ -138,7 +173,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         ProductionSchedulePlan plan = new ProductionSchedulePlan();
         plan.setTaskId(task.getId());
         plan.setScheduleName("日级排产方案");
-        plan.setPlanStartTime(LocalDateTime.parse(timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        LocalDateTime parsedStartTime = LocalDateTime.parse(timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        plan.setScheduleDate(parsedStartTime.toLocalDate());
+        plan.setPlanStartTime(parsedStartTime);
         plan.setPlanHorizon(planHorizon);
         plan.setPlanUnit(planUnit != null ? planUnit : "hour");
         plan.setDataGranularity(dataGranularity != null ? dataGranularity : "1 minute");
@@ -154,7 +191,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         algorithmTaskMapper.updateById(task);
 
         // 创建明细
-        LocalDateTime planStart = LocalDateTime.parse(timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        LocalDateTime planStart = parsedStartTime;
         for (Map<String, Object> item : schedule) {
             int hour = ((Number) item.get("hour")).intValue();
             LocalDateTime startTime = planStart.plusHours(hour);
@@ -178,5 +215,12 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .detailCount(schedule.size())
                 .build();
         return Result.ok("导入成功", vo);
+    }
+
+    private BigDecimal getDecimal(Map<String, Object> source, String key, BigDecimal defaultValue) {
+        if (source == null || source.get(key) == null) {
+            return defaultValue;
+        }
+        return new BigDecimal(source.get(key).toString());
     }
 }

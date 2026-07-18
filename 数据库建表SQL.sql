@@ -52,6 +52,26 @@ CREATE TABLE IF NOT EXISTS sys_user_role (
   KEY idx_role_id (role_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户角色关联表';
 
+INSERT INTO sys_user (id, username, password, real_name, status, remark)
+VALUES (1000000000000000001, 'admin', '123456', '系统管理员', 'ENABLE', '联调默认账号')
+ON DUPLICATE KEY UPDATE
+  password = VALUES(password),
+  real_name = VALUES(real_name),
+  status = VALUES(status),
+  deleted = 0;
+
+INSERT INTO sys_role (id, role_code, role_name, status, remark)
+VALUES (1000000000000000002, 'SYSTEM_ADMIN', '系统管理员', 'ENABLE', '联调默认角色')
+ON DUPLICATE KEY UPDATE
+  role_name = VALUES(role_name),
+  status = VALUES(status),
+  deleted = 0;
+
+INSERT INTO sys_user_role (id, user_id, role_id)
+VALUES (1000000000000000003, 1000000000000000001, 1000000000000000002)
+ON DUPLICATE KEY UPDATE
+  role_id = VALUES(role_id);
+
 CREATE TABLE IF NOT EXISTS sys_operation_log (
   id BIGINT PRIMARY KEY COMMENT '主键',
   user_id BIGINT NULL COMMENT '操作人',

@@ -13,6 +13,7 @@ import com.xq.service.ProductionScheduleService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -48,7 +49,7 @@ public class ProductionController {
 
     @Operation(summary = "生成排产方案", description = "根据排产参数发起异步排产任务，返回任务 ID 供后续查询")
     @PostMapping("/schedule/generate")
-    public Result<TaskVO> generateSchedule(@RequestBody ScheduleGenerateDTO dto) {
+    public Result<TaskVO> generateSchedule(@Valid @RequestBody ScheduleGenerateDTO dto) {
         return scheduleService.generate(dto);
     }
 

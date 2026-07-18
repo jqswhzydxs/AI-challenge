@@ -3,6 +3,7 @@
 *.iml
 # Maven编译产物
 target/
+.m2repo/
 # 系统文件
 .DS_Store
 Thumbs.db

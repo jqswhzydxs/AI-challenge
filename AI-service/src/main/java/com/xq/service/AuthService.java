@@ -7,4 +7,8 @@ import com.xq.model.vo.LoginVO;
 public interface AuthService {
 
     Result<LoginVO> login(LoginDTO loginDTO);
+
+    Result<LoginVO> currentUser(String authorization);
+
+    Result<Void> logout();
 }

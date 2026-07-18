@@ -4,7 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -24,7 +24,7 @@ public class EnergyPlanVO {
     private Long taskId;
 
     /** 方案日期 */
-    private LocalDateTime planDate;
+    private LocalDate planDate;
 
     /** 方案状态 */
     private String status;

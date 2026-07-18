@@ -12,9 +12,11 @@ import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.mapper.EnergyPlanMapper;
 import com.xq.model.dto.JointOptimizeDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EnergyPlan;
 import com.xq.model.entity.JointOptimizationPlan;
 import com.xq.model.entity.JointOptimizationTimeseries;
 import com.xq.model.entity.ConstraintConflict;
+import com.xq.model.entity.ProductionSchedulePlan;
 import com.xq.model.vo.JointOptimizeVO;
 import com.xq.model.vo.ConflictVO;
 import com.xq.model.vo.OptimizeTimeseriesVO;
@@ -26,6 +28,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -49,11 +53,12 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
     @Override
     @Transactional
     public Result<TaskVO> generate(JointOptimizeDTO dto) {
-        // 校验排产方案和能源方案存在
-        if (schedulePlanMapper.selectById(dto.getScheduleId()) == null) {
+        ProductionSchedulePlan schedulePlan = schedulePlanMapper.selectById(dto.getScheduleId());
+        if (schedulePlan == null) {
             throw new BusinessException(400, "排产方案不存在");
         }
-        if (energyPlanMapper.selectById(dto.getEnergyPlanId()) == null) {
+        EnergyPlan energyPlan = energyPlanMapper.selectById(dto.getEnergyPlanId());
+        if (energyPlan == null) {
             throw new BusinessException(400, "能源方案不存在");
         }
 
@@ -65,15 +70,47 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         task.setFrontendRequestJson(JSON.toJSONString(dto));
         algorithmTaskMapper.insert(task);
 
-        // Mock: 模拟异步
+        JointOptimizationPlan plan = new JointOptimizationPlan();
+        plan.setTaskId(task.getId());
+        plan.setScheduleId(schedulePlan.getId());
+        plan.setEnergyPlanId(energyPlan.getId());
+        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setRecommended(1);
+        plan.setCostReductionRate(new BigDecimal("2.30"));
+        plan.setEnergyReductionRate(new BigDecimal("1.80"));
+        plan.setExecuteRate(new BigDecimal("96.40"));
+        plan.setMape(new BigDecimal("2.10"));
+        plan.setEc(new BigDecimal("41.20"));
+        plan.setEr(new BigDecimal("96.80"));
+        optimizePlanMapper.insert(plan);
+
+        LocalDateTime start = schedulePlan.getPlanStartTime() != null
+                ? schedulePlan.getPlanStartTime()
+                : LocalDateTime.now().withMinute(0).withSecond(0).withNano(0);
+        int horizon = schedulePlan.getPlanHorizon() != null ? schedulePlan.getPlanHorizon() : 24;
+        for (int hour = 0; hour < horizon; hour++) {
+            JointOptimizationTimeseries point = new JointOptimizationTimeseries();
+            point.setOptimizeId(plan.getId());
+            point.setTimestamp(start.plusHours(hour));
+            point.setPlannedOutput(new BigDecimal("100.00").add(new BigDecimal(hour % 4).multiply(new BigDecimal("4.00"))));
+            point.setElectricityConsumption(new BigDecimal("950.00").add(new BigDecimal(hour * 6L)));
+            point.setSteamConsumption(new BigDecimal("205.00").add(new BigDecimal(hour % 5)));
+            point.setCarbonEmissionTco2(new BigDecimal("12.00").add(new BigDecimal(hour).multiply(new BigDecimal("0.02"))));
+            point.setEnergyCost(new BigDecimal("1390.00").add(new BigDecimal(hour * 10L)));
+            timeseriesMapper.insert(point);
+        }
+
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
+        task.setResultId(plan.getId());
         algorithmTaskMapper.updateById(task);
 
         TaskVO vo = TaskVO.builder()
                 .taskId(task.getId())
                 .taskType(task.getTaskType())
                 .status(task.getStatus())
+                .progress(task.getProgress())
+                .resultId(task.getResultId())
                 .build();
         return Result.ok("协同优化任务已创建", vo);
     }

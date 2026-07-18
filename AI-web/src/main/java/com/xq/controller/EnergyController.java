@@ -11,6 +11,7 @@ import com.xq.service.EnergyPlanService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -43,7 +44,7 @@ public class EnergyController {
 
     @Operation(summary = "生成能源运行方案", description = "根据能源参数发起异步方案生成任务，返回任务 ID")
     @PostMapping("/plan/generate")
-    public Result<TaskVO> generatePlan(@RequestBody EnergyPlanGenerateDTO dto) {
+    public Result<TaskVO> generatePlan(@Valid @RequestBody EnergyPlanGenerateDTO dto) {
         return energyPlanService.generate(dto);
     }
 
