@@ -30,7 +30,8 @@ public class TaskController {
     @GetMapping("/{taskId}")
     public Result<TaskVO> getTask(
             @Parameter(description = "任务 ID", required = true, example = "1")
-            @PathVariable Long taskId) {
+            @PathVariable("taskId") Long taskId) {
         return taskService.getTask(taskId);
     }
+
 }

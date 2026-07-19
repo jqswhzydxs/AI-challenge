@@ -13,6 +13,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -38,7 +39,7 @@ public class EnergyController {
 
     @Operation(summary = "实时能源数据", description = "按时间范围和采样间隔查询实时能源数据（电、煤气、蒸汽等）")
     @GetMapping("/realtime")
-    public Result<RealtimeDataVO> getRealtime(PageQueryDTO query) {
+    public Result<RealtimeDataVO> getRealtime(@ParameterObject PageQueryDTO query) {
         return energyDataService.getRealtime(query);
     }
 
@@ -52,7 +53,7 @@ public class EnergyController {
     @GetMapping("/plans/{planId}")
     public Result<EnergyPlanVO> getPlan(
             @Parameter(description = "能源方案 ID", required = true, example = "1")
-            @PathVariable Long planId) {
+            @PathVariable("planId") Long planId) {
         return energyPlanService.getPlanDetail(planId);
     }
 }

@@ -6,7 +6,6 @@ import lombok.Data;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.LocalTime;
 
 /**
  * MPC 实时调控结果实体.
@@ -28,7 +27,7 @@ public class MpcRealtimeControl {
     /** 控制日期 */
     private LocalDate controlDate;
     /** 控制时间，格式 HH:mm:ss */
-    private LocalTime controlTime;
+    private String controlTime;
     /** 原始时间字符串 */
     private String rawTimestamp;
     /** 锅炉负荷指令，MW */

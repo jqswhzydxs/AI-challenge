@@ -7,6 +7,7 @@ import com.xq.service.ReportService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -28,7 +29,7 @@ public class ReportController {
 
     @Operation(summary = "优化效果报表", description = "按日期范围查询优化前后各项指标的对比数据")
     @GetMapping("/optimization-effect")
-    public Result<OptimizationEffectVO> getOptimizationEffect(PageQueryDTO query) {
+    public Result<OptimizationEffectVO> getOptimizationEffect(@ParameterObject PageQueryDTO query) {
         return reportService.getOptimizationEffect(query);
     }
 }

@@ -23,6 +23,7 @@ import com.xq.model.entity.EnergyPlanDetail;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -36,7 +37,10 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
     @Override
     public Result<TaskVO> generate(EnergyPlanGenerateDTO dto) {
-        LocalDate planDate = LocalDate.parse(dto.getPlanDate());
+        if (dto == null) {
+            throw new BusinessException(400, "请求体不能为空");
+        }
+        LocalDate planDate = parseDate(dto.getPlanDate(), "planDate");
         LocalDateTime planStart = planDate.atStartOfDay();
 
         AlgorithmTask task = new AlgorithmTask();
@@ -85,6 +89,21 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .resultId(task.getResultId())
                 .build();
         return Result.ok("能源运行任务已创建", vo);
+    }
+
+    private LocalDate parseDate(String value, String fieldName) {
+        if (value == null || value.trim().isEmpty()) {
+            throw new BusinessException(400, fieldName + " 不能为空，格式应为 yyyy-MM-dd");
+        }
+        String text = value.trim();
+        if (text.length() >= 10) {
+            text = text.substring(0, 10);
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException e) {
+            throw new BusinessException(400, fieldName + " 格式错误，应为 yyyy-MM-dd，例如 2026-07-17");
+        }
     }
 
     @Override

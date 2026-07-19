@@ -15,6 +15,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -43,7 +44,7 @@ public class ProductionController {
 
     @Operation(summary = "生产订单列表", description = "分页查询生产订单，支持按日期、状态筛选")
     @GetMapping("/orders")
-    public Result<PageResult<ProductionOrderVO>> listOrders(PageQueryDTO query) {
+    public Result<PageResult<ProductionOrderVO>> listOrders(@ParameterObject PageQueryDTO query) {
         return orderService.listOrders(query);
     }
 
@@ -57,7 +58,7 @@ public class ProductionController {
     @GetMapping("/schedules/{scheduleId}")
     public Result<SchedulePlanVO> getSchedule(
             @Parameter(description = "排产方案 ID", required = true, example = "1")
-            @PathVariable Long scheduleId) {
+            @PathVariable("scheduleId") Long scheduleId) {
         return scheduleService.getPlanDetail(scheduleId);
     }
 

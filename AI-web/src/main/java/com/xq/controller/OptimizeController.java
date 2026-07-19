@@ -41,7 +41,7 @@ public class OptimizeController {
     @GetMapping("/joint/{optimizeId}")
     public Result<JointOptimizeVO> getResult(
             @Parameter(description = "协同优化 ID", required = true, example = "1")
-            @PathVariable Long optimizeId) {
+            @PathVariable("optimizeId") Long optimizeId) {
         return optimizeService.getResult(optimizeId);
     }
 }

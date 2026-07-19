@@ -5,8 +5,10 @@ import com.xq.common.constant.TaskType;
 import com.xq.common.exception.BusinessException;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
+import com.xq.mapper.EvaluationMetricMapper;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EvaluationMetric;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionScheduleService;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,7 @@ import com.alibaba.fastjson2.JSON;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
@@ -37,12 +40,19 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final ProductionSchedulePlanMapper schedulePlanMapper;
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
+    private final EvaluationMetricMapper evaluationMetricMapper;
 
     @Override
     @Transactional
     public Result<TaskVO> generate(ScheduleGenerateDTO dto) {
-        LocalDate scheduleDate = LocalDate.parse(dto.getScheduleDate());
+        if (dto == null) {
+            throw new BusinessException(400, "请求体不能为空");
+        }
+        LocalDate scheduleDate = parseDate(dto.getScheduleDate(), "scheduleDate");
         int planHorizon = dto.getPlanHorizon() != null ? dto.getPlanHorizon() : 24;
+        if (planHorizon <= 0) {
+            throw new BusinessException(400, "planHorizon 必须大于 0，建议填写 24");
+        }
         LocalDateTime planStart = scheduleDate.atStartOfDay();
 
         AlgorithmTask task = new AlgorithmTask();
@@ -142,13 +152,27 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Override
     @Transactional
     public Result<ImportPlanResultVO> importDailyPlan(Map<String, Object> dailyPlanJson) {
+        if (dailyPlanJson == null || dailyPlanJson.isEmpty()) {
+            throw new BusinessException(400, "请求体不能为空，请粘贴 daily_plan_v3.2.json 内容");
+        }
         String timestamp = (String) dailyPlanJson.get("timestamp");
-        Integer planHorizon = ((Number) dailyPlanJson.get("plan_horizon")).intValue();
+        if (timestamp == null || timestamp.trim().isEmpty()) {
+            throw new BusinessException(400, "缺少字段: timestamp");
+        }
+        Object planHorizonValue = dailyPlanJson.get("plan_horizon");
+        if (!(planHorizonValue instanceof Number)) {
+            throw new BusinessException(400, "缺少字段或字段类型错误: plan_horizon");
+        }
+        Integer planHorizon = ((Number) planHorizonValue).intValue();
         String planUnit = (String) dailyPlanJson.get("unit");
         String dataGranularity = (String) dailyPlanJson.get("data_granularity");
-        Number elecCoefficient = (Number) dailyPlanJson.get("elec_coefficient");
-        Number totalDemand = (Number) dailyPlanJson.get("total_demand");
-        Number totalEnergy = (Number) dailyPlanJson.get("total_energy");
+        BigDecimal elecCoefficient = getDecimal(dailyPlanJson, "elec_coefficient",
+                getDecimal(dailyPlanJson, "EC_optimized", null));
+        BigDecimal ecBaseline = getDecimal(dailyPlanJson, "EC_baseline", null);
+        BigDecimal ecReduction = getDecimal(dailyPlanJson, "EC_reduction", null);
+        BigDecimal totalDemand = getDecimal(dailyPlanJson, "total_demand", null);
+        BigDecimal totalProduction = getDecimal(dailyPlanJson, "total_production", null);
+        BigDecimal totalEnergy = getDecimal(dailyPlanJson, "total_energy", null);
 
         if (planHorizon != 24) {
             throw new BusinessException(400, "plan_horizon 必须为 24");
@@ -160,13 +184,30 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             throw new BusinessException(400, "schedule 必须包含 24 条记录");
         }
 
+        if (totalDemand == null) {
+            totalDemand = schedule.stream()
+                    .map(item -> getRequiredDecimal(item, "demand"))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
+        if (totalProduction == null) {
+            totalProduction = schedule.stream()
+                    .map(item -> getRequiredDecimal(item, "production"))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
+        if (elecCoefficient == null && totalEnergy != null && totalProduction.compareTo(BigDecimal.ZERO) > 0) {
+            elecCoefficient = totalEnergy.divide(totalProduction, 6, java.math.RoundingMode.HALF_UP);
+        }
+        if (elecCoefficient == null) {
+            throw new BusinessException(400, "缺少 elec_coefficient 或 EC_optimized，无法计算小时预测电耗");
+        }
+
         // 创建算法任务
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
         task.setAlgorithmResponseJson(JSON.toJSONString(dailyPlanJson));
-        task.setResultFileName("daily_plan.json");
+        task.setResultFileName("daily_plan_v3.2.json");
         algorithmTaskMapper.insert(task);
 
         // 创建排产方案主表
@@ -180,9 +221,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         plan.setPlanUnit(planUnit != null ? planUnit : "hour");
         plan.setDataGranularity(dataGranularity != null ? dataGranularity : "1 minute");
         plan.setStatus(TaskStatus.SUCCESS);
-        plan.setElecCoefficient(elecCoefficient != null ? new BigDecimal(elecCoefficient.toString()) : null);
-        plan.setTotalDemand(totalDemand != null ? new BigDecimal(totalDemand.toString()) : null);
-        plan.setTotalEnergy(totalEnergy != null ? new BigDecimal(totalEnergy.toString()) : null);
+        plan.setElecCoefficient(elecCoefficient);
+        plan.setTotalDemand(totalDemand);
+        plan.setTotalProduction(totalProduction);
+        plan.setTotalEnergy(totalEnergy);
         plan.setRawPlanJson(JSON.toJSONString(dailyPlanJson));
         schedulePlanMapper.insert(plan);
 
@@ -202,12 +244,24 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             detail.setHourIndex(hour);
             detail.setStartTime(startTime);
             detail.setEndTime(endTime);
-            detail.setDemand(new BigDecimal(item.get("demand").toString()));
-            detail.setProduction(new BigDecimal(item.get("production").toString()));
-            detail.setElecForecast(new BigDecimal(item.get("elec_forecast").toString()));
+            detail.setDemand(getRequiredDecimal(item, "demand"));
+            detail.setProduction(getRequiredDecimal(item, "production"));
+            detail.setElecForecast(getDecimal(item, "elec_forecast", detail.getProduction().multiply(elecCoefficient)));
             detail.setConflictFlag(0);
             scheduleDetailMapper.insert(detail);
         }
+
+        EvaluationMetric metric = new EvaluationMetric();
+        metric.setBizType("SCHEDULE");
+        metric.setBizId(plan.getId());
+        metric.setMape(getDecimal(dailyPlanJson, "MAPE", null));
+        metric.setEcBefore(ecBaseline);
+        metric.setEcAfter(elecCoefficient);
+        metric.setEr(new BigDecimal("100.00"));
+        metric.setCostSaving(null);
+        metric.setCarbonReduction(null);
+        metric.setCalculateTime(LocalDateTime.now());
+        evaluationMetricMapper.insert(metric);
 
         ImportPlanResultVO vo = ImportPlanResultVO.builder()
                 .taskId(task.getId())
@@ -222,5 +276,27 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             return defaultValue;
         }
         return new BigDecimal(source.get(key).toString());
+    }
+
+    private BigDecimal getRequiredDecimal(Map<String, Object> source, String key) {
+        if (source == null || source.get(key) == null) {
+            throw new BusinessException(400, "缺少字段: " + key);
+        }
+        return new BigDecimal(source.get(key).toString());
+    }
+
+    private LocalDate parseDate(String value, String fieldName) {
+        if (value == null || value.trim().isEmpty()) {
+            throw new BusinessException(400, fieldName + " 不能为空，格式应为 yyyy-MM-dd");
+        }
+        String text = value.trim();
+        if (text.length() >= 10) {
+            text = text.substring(0, 10);
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException e) {
+            throw new BusinessException(400, fieldName + " 格式错误，应为 yyyy-MM-dd，例如 2026-07-17");
+        }
     }
 }
