@@ -1,4 +1,4 @@
-package com.xq.config;
+package com.xq.web.config;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

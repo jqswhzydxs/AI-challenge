@@ -1,4 +1,4 @@
-package com.xq.config;
+package com.xq.web.config;
 
 import com.xq.common.exception.BusinessException;
 import com.xq.common.result.Result;

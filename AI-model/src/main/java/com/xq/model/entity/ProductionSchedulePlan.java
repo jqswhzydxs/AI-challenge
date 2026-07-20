@@ -42,9 +42,19 @@ public class ProductionSchedulePlan {
     private String objective;
     /** 电耗系数，kWh/吨 */
     private BigDecimal elecCoefficient;
+    /** 优化前 EC 基准值，kWh/吨 */
+    private BigDecimal ecBaseline;
+    /** 优化后 EC 值，kWh/吨 */
+    private BigDecimal ecOptimized;
+    /** EC 降低百分比 */
+    private BigDecimal ecReduction;
+    /** 最优温度，℃ */
+    private BigDecimal optimalTemperature;
+    /** 最优速度 */
+    private BigDecimal optimalSpeed;
     /** 总需求 */
     private BigDecimal totalDemand;
-    /** 总排产量，可由明细汇总 */
+    /** 总排产量，吨 */
     private BigDecimal totalProduction;
     /** 总预测电耗，kWh */
     private BigDecimal totalEnergy;

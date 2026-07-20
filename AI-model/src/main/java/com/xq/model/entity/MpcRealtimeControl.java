@@ -39,8 +39,10 @@ public class MpcRealtimeControl {
     /** 功率因数目标值 */
     private BigDecimal powerFactorTarget;
     /** 未来 5 分钟用电预测，kWh */
+    @TableField("elec_next_5min_kwh")
     private BigDecimal elecNext5minKwh;
     /** 未来 5 分钟蒸汽预测，吨 */
+    @TableField("steam_next_5min_t")
     private BigDecimal steamNext5minT;
     /** 来源文件名 */
     private String sourceFileName;

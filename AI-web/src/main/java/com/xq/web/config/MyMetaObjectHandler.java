@@ -1,4 +1,4 @@
-package com.xq.config;
+package com.xq.web.config;
 
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import org.apache.ibatis.reflection.MetaObject;

@@ -1,4 +1,4 @@
-package com.xq.controller;
+package com.xq.web.controller;
 
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
@@ -49,9 +49,9 @@ public class RealtimeControlController {
     public Result<RealtimeControlImportResultVO> importRealtimeControl(
             @RequestBody Object realtimeControlJson,
             @Parameter(description = "控制日期，算法 JSON 只有 HH:mm:ss 时必填，格式 yyyy-MM-dd", example = "2026-07-17")
-            @RequestParam(required = false) String controlDate,
+            @RequestParam(name = "controlDate", required = false) String controlDate,
             @Parameter(description = "来源文件名", example = "realtime_control.json")
-            @RequestParam(required = false) String sourceFileName) {
+            @RequestParam(name = "sourceFileName", required = false) String sourceFileName) {
         return realtimeControlService.importRealtimeControl(realtimeControlJson, controlDate, sourceFileName);
     }
 }

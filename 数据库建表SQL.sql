@@ -193,7 +193,12 @@ CREATE TABLE IF NOT EXISTS production_schedule_plan (
   data_granularity VARCHAR(32) NOT NULL DEFAULT '1 minute' COMMENT '模型底层数据粒度',
   status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS' COMMENT '方案状态',
   objective VARCHAR(64) NULL COMMENT '优化目标',
-  elec_coefficient DECIMAL(12,4) NULL COMMENT '电耗系数，kWh/吨',
+  elec_coefficient DECIMAL(12,4) NULL COMMENT '电耗系数，kWh/吨，旧版算法使用',
+  ec_baseline DECIMAL(12,4) NULL COMMENT '优化前EC基准值，kWh/吨',
+  ec_optimized DECIMAL(12,4) NULL COMMENT '优化后EC值，kWh/吨',
+  ec_reduction DECIMAL(12,4) NULL COMMENT 'EC降低百分比',
+  optimal_temperature DECIMAL(12,4) NULL COMMENT '最优温度，℃',
+  optimal_speed DECIMAL(12,4) NULL COMMENT '最优速度',
   total_demand DECIMAL(14,6) NULL COMMENT '总需求',
   total_production DECIMAL(14,6) NULL COMMENT '总排产量',
   total_energy DECIMAL(14,6) NULL COMMENT '总预测电耗，kWh',
@@ -516,3 +521,14 @@ CREATE TABLE IF NOT EXISTS mpc_realtime_control (
                                                     KEY idx_mpc_task_id (task_id),
                                                     KEY idx_mpc_create_time (create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MPC实时调控结果表';
+
+-- ==========================================
+-- v1.1 增量升级：算法组新版 daily_plan（2026-07-20）
+-- 对已有的 production_schedule_plan 表执行下面 ALTER
+-- ==========================================
+use challenge_cup_energy;
+ALTER TABLE production_schedule_plan ADD COLUMN ec_baseline DECIMAL(12,4) NULL COMMENT '优化前EC基准值，kWh/吨' AFTER elec_coefficient;
+ALTER TABLE production_schedule_plan ADD COLUMN ec_optimized DECIMAL(12,4) NULL COMMENT '优化后EC值，kWh/吨' AFTER ec_baseline;
+ALTER TABLE production_schedule_plan ADD COLUMN ec_reduction DECIMAL(12,4) NULL COMMENT 'EC降低百分比' AFTER ec_optimized;
+ALTER TABLE production_schedule_plan ADD COLUMN optimal_temperature DECIMAL(12,4) NULL COMMENT '最优温度，℃' AFTER ec_reduction;
+ALTER TABLE production_schedule_plan ADD COLUMN optimal_speed DECIMAL(12,4) NULL COMMENT '最优速度' AFTER optimal_temperature;

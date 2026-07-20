@@ -142,7 +142,13 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .dataGranularity(plan.getDataGranularity())
                 .status(plan.getStatus())
                 .elecCoefficient(plan.getElecCoefficient())
+                .ecBaseline(plan.getEcBaseline())
+                .ecOptimized(plan.getEcOptimized())
+                .ecReduction(plan.getEcReduction())
+                .optimalTemperature(plan.getOptimalTemperature())
+                .optimalSpeed(plan.getOptimalSpeed())
                 .totalDemand(plan.getTotalDemand())
+                .totalProduction(plan.getTotalProduction())
                 .totalEnergy(plan.getTotalEnergy())
                 .details(detailVOs)
                 .build();
@@ -166,10 +172,11 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         Integer planHorizon = ((Number) planHorizonValue).intValue();
         String planUnit = (String) dailyPlanJson.get("unit");
         String dataGranularity = (String) dailyPlanJson.get("data_granularity");
-        BigDecimal elecCoefficient = getDecimal(dailyPlanJson, "elec_coefficient",
-                getDecimal(dailyPlanJson, "EC_optimized", null));
-        BigDecimal ecBaseline = getDecimal(dailyPlanJson, "EC_baseline", null);
-        BigDecimal ecReduction = getDecimal(dailyPlanJson, "EC_reduction", null);
+        BigDecimal ecBaseline = getDecimalAny(dailyPlanJson, null, "EC_baseline", "ecBaseline", "elec_coefficient");
+        BigDecimal ecOptimized = getDecimalAny(dailyPlanJson, null, "EC_optimized", "ecOptimized");
+        BigDecimal ecReduction = getDecimalAny(dailyPlanJson, null, "EC_reduction", "ecReduction");
+        BigDecimal optimalTemperature = getDecimalAny(dailyPlanJson, null, "optimal_temperature", "optimalTemperature");
+        BigDecimal optimalSpeed = getDecimalAny(dailyPlanJson, null, "optimal_speed", "optimalSpeed");
         BigDecimal totalDemand = getDecimal(dailyPlanJson, "total_demand", null);
         BigDecimal totalProduction = getDecimal(dailyPlanJson, "total_production", null);
         BigDecimal totalEnergy = getDecimal(dailyPlanJson, "total_energy", null);
@@ -194,11 +201,11 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                     .map(item -> getRequiredDecimal(item, "production"))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
         }
-        if (elecCoefficient == null && totalEnergy != null && totalProduction.compareTo(BigDecimal.ZERO) > 0) {
-            elecCoefficient = totalEnergy.divide(totalProduction, 6, java.math.RoundingMode.HALF_UP);
+        if (ecOptimized == null && totalEnergy != null && totalProduction.compareTo(BigDecimal.ZERO) > 0) {
+            ecOptimized = totalEnergy.divide(totalProduction, 6, java.math.RoundingMode.HALF_UP);
         }
-        if (elecCoefficient == null) {
-            throw new BusinessException(400, "缺少 elec_coefficient 或 EC_optimized，无法计算小时预测电耗");
+        if (ecOptimized == null) {
+            throw new BusinessException(400, "缺少 EC_optimized，无法计算小时预测电耗");
         }
 
         // 创建算法任务
@@ -221,7 +228,13 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         plan.setPlanUnit(planUnit != null ? planUnit : "hour");
         plan.setDataGranularity(dataGranularity != null ? dataGranularity : "1 minute");
         plan.setStatus(TaskStatus.SUCCESS);
-        plan.setElecCoefficient(elecCoefficient);
+        // 新版 JSON：以 EC_optimized 作为小时预测电耗计算系数，elecCoefficient 仅作为兼容旧前端字段返回。
+        plan.setElecCoefficient(ecOptimized);
+        plan.setEcBaseline(ecBaseline);
+        plan.setEcOptimized(ecOptimized);
+        plan.setEcReduction(ecReduction);
+        plan.setOptimalTemperature(optimalTemperature);
+        plan.setOptimalSpeed(optimalSpeed);
         plan.setTotalDemand(totalDemand);
         plan.setTotalProduction(totalProduction);
         plan.setTotalEnergy(totalEnergy);
@@ -232,21 +245,26 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         task.setResultId(plan.getId());
         algorithmTaskMapper.updateById(task);
 
-        // 创建明细
+        // 创建明细 —— 新版 JSON 无 elec_forecast，用 production * EC_optimized 计算
         LocalDateTime planStart = parsedStartTime;
         for (Map<String, Object> item : schedule) {
             int hour = ((Number) item.get("hour")).intValue();
             LocalDateTime startTime = planStart.plusHours(hour);
             LocalDateTime endTime = startTime.plusHours(1);
+            BigDecimal production = getRequiredDecimal(item, "production");
+            BigDecimal demand = getRequiredDecimal(item, "demand");
 
             ProductionScheduleDetail detail = new ProductionScheduleDetail();
             detail.setScheduleId(plan.getId());
             detail.setHourIndex(hour);
             detail.setStartTime(startTime);
             detail.setEndTime(endTime);
-            detail.setDemand(getRequiredDecimal(item, "demand"));
-            detail.setProduction(getRequiredDecimal(item, "production"));
-            detail.setElecForecast(getDecimal(item, "elec_forecast", detail.getProduction().multiply(elecCoefficient)));
+            detail.setDemand(demand);
+            detail.setProduction(production);
+            // 新版无 elec_forecast：用 production * EC_optimized 推导
+            BigDecimal elecForecast = getDecimal(item, "elec_forecast",
+                    ecOptimized != null ? production.multiply(ecOptimized) : null);
+            detail.setElecForecast(elecForecast);
             detail.setConflictFlag(0);
             scheduleDetailMapper.insert(detail);
         }
@@ -256,7 +274,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         metric.setBizId(plan.getId());
         metric.setMape(getDecimal(dailyPlanJson, "MAPE", null));
         metric.setEcBefore(ecBaseline);
-        metric.setEcAfter(elecCoefficient);
+        metric.setEcAfter(ecOptimized);
         metric.setEr(new BigDecimal("100.00"));
         metric.setCostSaving(null);
         metric.setCarbonReduction(null);
@@ -276,6 +294,18 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             return defaultValue;
         }
         return new BigDecimal(source.get(key).toString());
+    }
+
+    private BigDecimal getDecimalAny(Map<String, Object> source, BigDecimal defaultValue, String... keys) {
+        if (source == null) {
+            return defaultValue;
+        }
+        for (String key : keys) {
+            if (source.get(key) != null) {
+                return new BigDecimal(source.get(key).toString());
+            }
+        }
+        return defaultValue;
     }
 
     private BigDecimal getRequiredDecimal(Map<String, Object> source, String key) {

@@ -1,4 +1,4 @@
-package com.xq.controller;
+package com.xq.web.controller;
 
 import com.xq.common.result.Result;
 import com.xq.model.dto.PageQueryDTO;
