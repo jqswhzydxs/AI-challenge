@@ -49,11 +49,11 @@ public class EnergyController {
         return energyPlanService.generate(dto);
     }
 
-    @Operation(summary = "查询能源运行方案详情", description = "根据方案 ID 查询能源运行方案的完整结果")
-    @GetMapping("/plans/{planId}")
+    @Operation(summary = "查询能源运行方案详情", description = "根据方案日期查询当天最新能源运行方案的完整结果")
+    @GetMapping("/plan/{planDate}")
     public Result<EnergyPlanVO> getPlan(
-            @Parameter(description = "能源方案 ID", required = true, example = "1")
-            @PathVariable("planId") Long planId) {
-        return energyPlanService.getPlanDetail(planId);
+            @Parameter(description = "方案日期，格式 yyyy-MM-dd", required = true, example = "2026-07-21")
+            @PathVariable("planDate") String planDate) {
+        return energyPlanService.getPlanDetail(planDate);
     }
 }

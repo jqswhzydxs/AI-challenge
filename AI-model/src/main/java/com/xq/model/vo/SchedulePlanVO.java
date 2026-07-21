@@ -70,4 +70,7 @@ public class SchedulePlanVO {
 
     /** 小时明细列表 */
     private List<ScheduleDetailVO> details;
+
+    /** 明细条数（列表接口返回，详情接口不返回） */
+    private Integer detailCount;
 }

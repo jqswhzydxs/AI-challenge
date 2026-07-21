@@ -167,7 +167,7 @@ def main():
     print(f"  constraint_conflict           → 按规则已生成")
     print()
     print("验证:")
-    print(f"  curl -H 'Authorization: Bearer <token>' {BASE_URL}/api/energy/plans/{plan_id}")
+    print(f"  curl -H 'Authorization: Bearer <token>' {BASE_URL}/api/energy/plan/{PLAN_DATE}")
     print(f"  curl -H 'Authorization: Bearer <token>' {BASE_URL}/api/optimize/joint/{opt_id}")
 
 

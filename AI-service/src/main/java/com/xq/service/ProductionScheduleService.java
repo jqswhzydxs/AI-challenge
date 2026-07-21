@@ -1,5 +1,6 @@
 package com.xq.service;
 
+import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.vo.ImportPlanResultVO;
@@ -15,4 +16,6 @@ public interface ProductionScheduleService {
     Result<SchedulePlanVO> getPlanDetail(Long scheduleId);
 
     Result<ImportPlanResultVO> importDailyPlan(Map<String, Object> dailyPlanJson);
+
+    Result<PageResult<SchedulePlanVO>> listHistory(int page, int size);
 }

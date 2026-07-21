@@ -245,15 +245,21 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     }
 
     @Override
-    public Result<EnergyPlanVO> getPlanDetail(Long planId) {
-        EnergyPlan plan = energyPlanMapper.selectById(planId);
+    public Result<EnergyPlanVO> getPlanDetail(String planDate) {
+        LocalDate date = parseDate(planDate, "planDate");
+        EnergyPlan plan = energyPlanMapper.selectOne(
+                new LambdaQueryWrapper<EnergyPlan>()
+                        .eq(EnergyPlan::getPlanDate, date)
+                        .orderByDesc(EnergyPlan::getCreateTime)
+                        .last("LIMIT 1")
+        );
         if (plan == null) {
-            throw new BusinessException(404, "能源方案不存在");
+            throw new BusinessException(404, "该日期能源方案不存在");
         }
 
         List<EnergyPlanDetail> details = energyPlanDetailMapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EnergyPlanDetail>()
-                        .eq(EnergyPlanDetail::getPlanId, planId)
+                new LambdaQueryWrapper<EnergyPlanDetail>()
+                        .eq(EnergyPlanDetail::getPlanId, plan.getId())
                         .orderByAsc(EnergyPlanDetail::getTimestamp)
         );
 

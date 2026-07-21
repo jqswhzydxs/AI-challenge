@@ -3,6 +3,7 @@ package com.xq.service.impl;
 import com.xq.common.constant.TaskStatus;
 import com.xq.common.constant.TaskType;
 import com.xq.common.exception.BusinessException;
+import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
 import com.xq.mapper.EvaluationMetricMapper;
@@ -32,6 +33,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 
 @Service
 @RequiredArgsConstructor
@@ -287,6 +291,44 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .detailCount(schedule.size())
                 .build();
         return Result.ok("导入成功", vo);
+    }
+
+    @Override
+    public Result<PageResult<SchedulePlanVO>> listHistory(int page, int size) {
+        IPage<ProductionSchedulePlan> pageResult = schedulePlanMapper.selectPage(
+                new Page<>(page, size),
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .orderByDesc(ProductionSchedulePlan::getCreateTime)
+        );
+
+        List<SchedulePlanVO> records = pageResult.getRecords().stream().map(plan -> {
+            long detailCount = scheduleDetailMapper.selectCount(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionScheduleDetail>()
+                            .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
+            );
+            return SchedulePlanVO.builder()
+                    .scheduleId(plan.getId())
+                    .taskId(plan.getTaskId())
+                    .scheduleName(plan.getScheduleName())
+                    .planStartTime(plan.getPlanStartTime())
+                    .planHorizon(plan.getPlanHorizon())
+                    .planUnit(plan.getPlanUnit())
+                    .dataGranularity(plan.getDataGranularity())
+                    .status(plan.getStatus())
+                    .elecCoefficient(plan.getElecCoefficient())
+                    .ecBaseline(plan.getEcBaseline())
+                    .ecOptimized(plan.getEcOptimized())
+                    .ecReduction(plan.getEcReduction())
+                    .optimalTemperature(plan.getOptimalTemperature())
+                    .optimalSpeed(plan.getOptimalSpeed())
+                    .totalDemand(plan.getTotalDemand())
+                    .totalProduction(plan.getTotalProduction())
+                    .totalEnergy(plan.getTotalEnergy())
+                    .detailCount(detailCount > 0 ? (int) detailCount : null)
+                    .build();
+        }).collect(Collectors.toList());
+
+        return Result.ok(PageResult.of(pageResult.getTotal(), page, size, records));
     }
 
     private BigDecimal getDecimal(Map<String, Object> source, String key, BigDecimal defaultValue) {

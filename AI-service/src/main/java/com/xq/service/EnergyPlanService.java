@@ -9,5 +9,5 @@ public interface EnergyPlanService {
 
     Result<TaskVO> generate(EnergyPlanGenerateDTO dto);
 
-    Result<EnergyPlanVO> getPlanDetail(Long planId);
+    Result<EnergyPlanVO> getPlanDetail(String planDate);
 }

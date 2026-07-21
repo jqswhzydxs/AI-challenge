@@ -62,6 +62,14 @@ public class ProductionController {
         return scheduleService.getPlanDetail(scheduleId);
     }
 
+    @Operation(summary = "排产方案历史列表", description = "分页查询所有排产方案，按创建时间倒序")
+    @GetMapping("/schedule/history")
+    public Result<PageResult<SchedulePlanVO>> listScheduleHistory(
+            @Parameter(description = "页码", example = "1") @RequestParam(defaultValue = "1") int page,
+            @Parameter(description = "每页条数", example = "10") @RequestParam(defaultValue = "10") int size) {
+        return scheduleService.listHistory(page, size);
+    }
+
     @Operation(summary = "导入日级排产 JSON", description = "联调用：导入算法端返回的日级排产 JSON，解析后保存到数据库")
     @PostMapping("/schedules/import-daily-plan")
     public Result<ImportPlanResultVO> importDailyPlan(@RequestBody Map<String, Object> dailyPlanJson) {
