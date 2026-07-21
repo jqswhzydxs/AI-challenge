@@ -5,11 +5,13 @@ import com.xq.common.constant.TaskType;
 import com.xq.common.exception.BusinessException;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
+import com.xq.mapper.EnergyEquipmentMapper;
 import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.ProductionScheduleDetailMapper;
 import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.model.dto.EnergyPlanGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EnergyEquipment;
 import com.xq.model.entity.EnergyRealtimeData;
 import com.xq.model.entity.ProductionScheduleDetail;
 import com.xq.model.entity.ProductionSchedulePlan;
@@ -45,6 +47,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final EnergyPlanMapper energyPlanMapper;
     private final EnergyPlanDetailMapper energyPlanDetailMapper;
+    private final EnergyEquipmentMapper energyEquipmentMapper;
     private final EnergyRealtimeDataMapper energyRealtimeDataMapper;
     private final ProductionSchedulePlanMapper schedulePlanMapper;
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
@@ -66,8 +69,10 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         task.setTaskType(TaskType.ENERGY_PLAN);
         task.setStatus(TaskStatus.PENDING);
         task.setProgress(0);
+        task.setMessage("能源运行方案派生计算中");
         task.setRetryCount(0);
         task.setFrontendRequestJson(JSON.toJSONString(dto));
+        task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
         EnergyPlan plan = new EnergyPlan();
@@ -100,7 +105,9 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
+        task.setMessage("能源运行方案已生成");
         task.setResultId(plan.getId());
+        task.setFinishTime(LocalDateTime.now());
         algorithmTaskMapper.updateById(task);
 
         TaskVO vo = TaskVO.builder()
@@ -108,7 +115,11 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .taskType(task.getTaskType())
                 .status(task.getStatus())
                 .progress(task.getProgress())
+                .message(task.getMessage())
                 .resultId(task.getResultId())
+                .errorMessage(task.getErrorMessage())
+                .createTime(task.getStartTime())
+                .updateTime(task.getFinishTime())
                 .build();
         return Result.ok("能源运行任务已创建", vo);
     }
@@ -246,9 +257,16 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                         .orderByAsc(EnergyPlanDetail::getTimestamp)
         );
 
+        Map<Long, String> equipmentNameMap = details.stream()
+                .map(EnergyPlanDetail::getEquipmentId)
+                .filter(id -> id != null)
+                .distinct()
+                .collect(Collectors.toMap(id -> id, this::equipmentName));
+
         List<EnergyPlanDetailVO> detailVOs = details.stream().map(d -> EnergyPlanDetailVO.builder()
                 .timestamp(d.getTimestamp())
                 .equipmentId(d.getEquipmentId())
+                .equipmentName(equipmentNameMap.getOrDefault(d.getEquipmentId(), inferEquipmentName(d.getEquipmentId())))
                 .output(d.getOutput())
                 .electricityConsumption(d.getElectricityConsumption())
                 .steamConsumption(d.getSteamConsumption())
@@ -267,5 +285,26 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .details(detailVOs)
                 .build();
         return Result.ok(vo);
+    }
+
+    private String equipmentName(Long equipmentId) {
+        if (equipmentId == null) {
+            return null;
+        }
+        EnergyEquipment equipment = energyEquipmentMapper.selectById(equipmentId);
+        if (equipment == null || equipment.getEquipmentName() == null || equipment.getEquipmentName().trim().isEmpty()) {
+            return inferEquipmentName(equipmentId);
+        }
+        return equipment.getEquipmentName();
+    }
+
+    private String inferEquipmentName(Long equipmentId) {
+        if (equipmentId == null) {
+            return "能源设备";
+        }
+        if (equipmentId == 1L) {
+            return "锅炉1";
+        }
+        return "能源设备-" + equipmentId;
     }
 }

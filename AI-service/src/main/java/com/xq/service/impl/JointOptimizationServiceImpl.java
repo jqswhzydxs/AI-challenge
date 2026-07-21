@@ -92,8 +92,10 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         task.setTaskType(TaskType.JOINT_OPTIMIZATION);
         task.setStatus(TaskStatus.PENDING);
         task.setProgress(0);
+        task.setMessage("协同优化评价派生计算中");
         task.setRetryCount(0);
         task.setFrontendRequestJson(JSON.toJSONString(dto));
+        task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
         JointOptimizationPlan plan = new JointOptimizationPlan();
@@ -145,7 +147,9 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
 
         task.setStatus(TaskStatus.SUCCESS);
         task.setProgress(100);
+        task.setMessage("协同优化评价已生成");
         task.setResultId(plan.getId());
+        task.setFinishTime(LocalDateTime.now());
         algorithmTaskMapper.updateById(task);
 
         TaskVO vo = TaskVO.builder()
@@ -153,7 +157,11 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                 .taskType(task.getTaskType())
                 .status(task.getStatus())
                 .progress(task.getProgress())
+                .message(task.getMessage())
                 .resultId(task.getResultId())
+                .errorMessage(task.getErrorMessage())
+                .createTime(task.getStartTime())
+                .updateTime(task.getFinishTime())
                 .build();
         return Result.ok("协同优化任务已创建", vo);
     }

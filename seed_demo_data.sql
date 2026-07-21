@@ -5,8 +5,14 @@ USE challenge_cup_energy;
 -- 说明：
 -- 1. 可重复执行，固定 ID 使用 ON DUPLICATE KEY UPDATE。
 -- 2. daily_plan_v3.2.json 已写入排产任务、排产方案和 24 条明细。
--- 3. realtime_control.json 已写入 MPC 实时调控结果。
--- 4. energy_plan / joint_optimization 两类正式算法结果先不造假，等算法组给样例后再补。
+-- 3. 导入顺序固定：
+--    seed_demo_data.sql
+--    seed_steel_data.sql（清空能源实时/样本表，导入 35,040 行 15分钟数据，source='steel_data_cleaned'）
+--    seed_steel_1min.sql（追加 132,481 行 1分钟数据，source='steel_data_1min_fixed'）
+--    seed_mpc_control.sql（清空 MPC，导入 120 条 final，日期 2026-07-17）
+--    seed_mpc_hourly.sql（追加 120 条 hourly，日期 2026-07-18）
+-- 4. 48 条合成能源曲线和 1 条 realtime_control.json 样本已移除，由真实数据替代。
+-- 5. energy_plan / joint_optimization → fill_tables.py（需要后端运行中）。
 -- =========================================================
 
 -- 1. 登录账号和角色
@@ -263,75 +269,10 @@ ON DUPLICATE KEY UPDATE
   carbon_reduction = VALUES(carbon_reduction),
   calculate_time = VALUES(calculate_time);
 
--- 5. 根据 realtime_control.json 导入 MPC 调控结果
-INSERT INTO algorithm_task (
-  id, task_type, status, progress, result_id, message, retry_count,
-  algorithm_name, algorithm_version, result_file_name, algorithm_response_json,
-  start_time, finish_time, deleted, remark
-)
-VALUES (
-  5000000000000000001,
-  'REALTIME_MPC',
-  'SUCCESS',
-  100,
-  5000000000000000101,
-  'realtime_control.json 导入成功',
-  0,
-  'MPC_REALTIME_CONTROL',
-  'v1.0',
-  'realtime_control.json',
-  '{"timestamp":"01:00:00","control":{"boiler_load":30.009999999999998,"turbine_output":10.177999999999999,"grid_purchase":0,"power_factor_target":0.95},"forecast":{"elec_next_5min":4.1819999999999995,"steam_next_5min":0.505}}',
-  '2026-07-17 01:00:00',
-  '2026-07-17 01:00:01',
-  0,
-  '算法组 realtime_control.json'
-)
-ON DUPLICATE KEY UPDATE
-  status = VALUES(status),
-  progress = VALUES(progress),
-  result_id = VALUES(result_id),
-  message = VALUES(message),
-  algorithm_response_json = VALUES(algorithm_response_json),
-  finish_time = VALUES(finish_time),
-  deleted = 0,
-  remark = VALUES(remark);
-
-INSERT INTO mpc_realtime_control (
-  id, task_id, control_date, control_time, raw_timestamp,
-  boiler_load_mw, turbine_output_mw, grid_purchase_kwh, power_factor_target,
-  elec_next_5min_kwh, steam_next_5min_t, source_file_name, raw_json
-)
-VALUES (
-  5000000000000000101,
-  5000000000000000001,
-  '2026-07-17',
-  '01:00:00',
-  '01:00:00',
-  30.010000,
-  10.178000,
-  0.000000,
-  0.950000,
-  4.182000,
-  0.505000,
-  'realtime_control.json',
-  '{"timestamp":"01:00:00","control":{"boiler_load":30.009999999999998,"turbine_output":10.177999999999999,"grid_purchase":0,"power_factor_target":0.95},"forecast":{"elec_next_5min":4.1819999999999995,"steam_next_5min":0.505}}'
-)
-ON DUPLICATE KEY UPDATE
-  task_id = VALUES(task_id),
-  boiler_load_mw = VALUES(boiler_load_mw),
-  turbine_output_mw = VALUES(turbine_output_mw),
-  grid_purchase_kwh = VALUES(grid_purchase_kwh),
-  power_factor_target = VALUES(power_factor_target),
-  elec_next_5min_kwh = VALUES(elec_next_5min_kwh),
-  steam_next_5min_t = VALUES(steam_next_5min_t),
-  source_file_name = VALUES(source_file_name),
-  raw_json = VALUES(raw_json);
-
--- 6. 首页告警和报表统计
+-- 5. 首页告警和报表统计
 INSERT INTO warning_record (id, warning_type, level, message, biz_type, biz_id, warning_time, handled)
 VALUES
   (6000000000000000001, 'ENERGY_LOAD', 'HIGH', '17:00-18:00 预测负荷接近上限，请关注锅炉负荷裕度', 'SCHEDULE', 4000000000000000101, '2026-07-17 17:05:00', 0),
-  (6000000000000000002, 'POWER_FACTOR', 'MEDIUM', '功率因数目标维持在 0.95，建议持续监控无功波动', 'REALTIME_MPC', 5000000000000000101, '2026-07-17 01:00:00', 0),
   (6000000000000000003, 'ORDER_RISK', 'LOW', '订单 PO-20260717-002 存在排产窗口压缩风险', 'ORDER', 2000000000000000202, '2026-07-17 16:30:00', 0)
 ON DUPLICATE KEY UPDATE
   warning_type = VALUES(warning_type),
@@ -353,55 +294,7 @@ ON DUPLICATE KEY UPDATE
   carbon_reduction = VALUES(carbon_reduction),
   production_output = VALUES(production_output);
 
--- 7. 合成 48 条实时能源曲线数据，供首页和能源页联调
-DELETE FROM energy_realtime_data
-WHERE timestamp >= '2026-07-17 00:00:00'
-  AND timestamp < '2026-07-17 12:00:00'
-  AND source = 'seed_demo_data';
-
-INSERT INTO energy_realtime_data (
-  id, timestamp, raw_timestamp, electricity_consumption, steam_consumption,
-  carbon_emission_tco2, lagging_reactive_power_kvarh, leading_reactive_power_kvarh,
-  lagging_power_factor, leading_power_factor, nsm, week_status, day_of_week,
-  load_type, data_quality, source
-)
-SELECT
-  7000000000000000000 + n.n,
-  DATE_ADD('2026-07-17 00:00:00', INTERVAL n.n * 15 MINUTE),
-  DATE_FORMAT(DATE_ADD('2026-07-17 00:00:00', INTERVAL n.n * 15 MINUTE), '%Y-%m-%d %H:%i:%s'),
-  ROUND(4.00 + (n.n % 12) * 0.18 + IF(n.n BETWEEN 16 AND 32, 0.80, 0.00), 4),
-  ROUND(0.45 + (n.n % 8) * 0.025, 4),
-  ROUND((4.00 + (n.n % 12) * 0.18 + IF(n.n BETWEEN 16 AND 32, 0.80, 0.00)) * 0.0078, 6),
-  ROUND(1.20 + (n.n % 5) * 0.08, 4),
-  ROUND(0.30 + (n.n % 4) * 0.04, 4),
-  ROUND(0.91 + (n.n % 6) * 0.006, 4),
-  ROUND(0.96 - (n.n % 5) * 0.004, 4),
-  n.n * 900,
-  'WORKDAY',
-  'FRIDAY',
-  CASE
-    WHEN n.n BETWEEN 16 AND 32 THEN 'MAXIMUM_LOAD'
-    WHEN n.n BETWEEN 0 AND 8 THEN 'LIGHT_LOAD'
-    ELSE 'MEDIUM_LOAD'
-  END,
-  'NORMAL',
-  'seed_demo_data'
-FROM (
-  SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
-  SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL
-  SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL
-  SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL
-  SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL
-  SELECT 20 UNION ALL SELECT 21 UNION ALL SELECT 22 UNION ALL SELECT 23 UNION ALL
-  SELECT 24 UNION ALL SELECT 25 UNION ALL SELECT 26 UNION ALL SELECT 27 UNION ALL
-  SELECT 28 UNION ALL SELECT 29 UNION ALL SELECT 30 UNION ALL SELECT 31 UNION ALL
-  SELECT 32 UNION ALL SELECT 33 UNION ALL SELECT 34 UNION ALL SELECT 35 UNION ALL
-  SELECT 36 UNION ALL SELECT 37 UNION ALL SELECT 38 UNION ALL SELECT 39 UNION ALL
-  SELECT 40 UNION ALL SELECT 41 UNION ALL SELECT 42 UNION ALL SELECT 43 UNION ALL
-  SELECT 44 UNION ALL SELECT 45 UNION ALL SELECT 46 UNION ALL SELECT 47
-) n;
-
--- 8. 操作日志，供系统页面联调
+-- 7. 操作日志，供系统页面联调
 INSERT INTO sys_operation_log (
   id, user_id, module, operation, request_uri, request_method, request_param, result_code, error_message, operation_time
 )
@@ -425,6 +318,4 @@ SELECT 'sys_user' table_name, COUNT(*) row_count FROM sys_user
 UNION ALL SELECT 'production_order', COUNT(*) FROM production_order
 UNION ALL SELECT 'production_schedule_plan', COUNT(*) FROM production_schedule_plan
 UNION ALL SELECT 'production_schedule_detail', COUNT(*) FROM production_schedule_detail WHERE schedule_id = 4000000000000000101
-UNION ALL SELECT 'mpc_realtime_control', COUNT(*) FROM mpc_realtime_control
-UNION ALL SELECT 'energy_realtime_data(seed)', COUNT(*) FROM energy_realtime_data WHERE source = 'seed_demo_data'
 UNION ALL SELECT 'warning_record', COUNT(*) FROM warning_record;

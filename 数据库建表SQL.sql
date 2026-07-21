@@ -284,8 +284,8 @@ CREATE TABLE IF NOT EXISTS energy_realtime_data (
   day_of_week VARCHAR(32) NULL COMMENT '星期',
   load_type VARCHAR(64) NULL COMMENT '负荷类型',
   data_quality VARCHAR(32) NULL COMMENT 'NORMAL/MISSING/ABNORMAL',
-  source VARCHAR(128) NULL DEFAULT 'steel-industry-energy-dataset' COMMENT '数据来源',
-  UNIQUE KEY uk_timestamp (timestamp),
+  source VARCHAR(128) NULL DEFAULT 'steel_data_cleaned' COMMENT '数据来源',
+  UNIQUE KEY uk_timestamp_source (timestamp, source),
   KEY idx_data_quality (data_quality),
   KEY idx_load_type (load_type),
   KEY idx_week_day (week_status, day_of_week)
@@ -306,8 +306,8 @@ CREATE TABLE IF NOT EXISTS steel_energy_dataset (
   day_of_week VARCHAR(32) NULL COMMENT '星期',
   load_type VARCHAR(64) NULL COMMENT '负荷类型',
   steam_consumption DECIMAL(14,4) NULL COMMENT 'steam，单位待确认',
-  data_quality VARCHAR(32) NULL COMMENT '数据质量',
-  UNIQUE KEY uk_dataset_timestamp (timestamp),
+  data_quality VARCHAR(32) NULL COMMENT '数据质量/导入批次标识',
+  UNIQUE KEY uk_dataset_timestamp_source (timestamp, data_quality),
   KEY idx_dataset_load_type (load_type),
   KEY idx_dataset_nsm (nsm)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='钢铁能源样本表';
@@ -496,6 +496,15 @@ CREATE TABLE IF NOT EXISTS report_statistic (
   production_output DECIMAL(14,2) NULL COMMENT '产量',
   UNIQUE KEY uk_stat_date_type (stat_date, stat_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='报表统计表';
+
+-- ==========================================
+-- v1.2 存量库修正：能源历史数据允许不同来源共用同一时间戳
+-- 说明：若旧唯一键已删除或新唯一键已存在，对应 ALTER 报错可忽略。
+-- ==========================================
+ALTER TABLE energy_realtime_data DROP KEY uk_timestamp;
+ALTER TABLE energy_realtime_data ADD UNIQUE KEY uk_timestamp_source (timestamp, source);
+ALTER TABLE steel_energy_dataset DROP KEY uk_dataset_timestamp;
+ALTER TABLE steel_energy_dataset ADD UNIQUE KEY uk_dataset_timestamp_source (timestamp, data_quality);
 
 
 ALTER TABLE algorithm_task
