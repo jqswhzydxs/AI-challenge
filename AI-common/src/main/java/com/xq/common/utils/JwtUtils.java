@@ -22,11 +22,15 @@ import java.util.Date;
 public final class JwtUtils {
 
     /** JWT 签名密钥 */
-    private static final String SECRET = "steel-energy-optimization-platform-jwt-secret-key-2026";
+    private static final String SECRET_PROPERTY = "jwt.secret";
+    private static final String EXPIRE_SECONDS_PROPERTY = "jwt.expire-seconds";
+    private static final String EXPIRE_SECONDS_CAMEL_PROPERTY = "jwt.expireSeconds";
+    private static final String SECRET_ENV = "JWT_SECRET";
+    private static final String EXPIRE_SECONDS_ENV = "JWT_EXPIRE_SECONDS";
+    private static final String DEFAULT_SECRET = "steel-energy-optimization-platform-jwt-secret-key-2026";
     /** Token 有效期（秒），默认 24 小时 */
-    private static final long EXPIRE_SECONDS = 86400L;
+    private static final long DEFAULT_EXPIRE_SECONDS = 86400L;
     /** 预计算的签名 Key */
-    private static final SecretKey KEY = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
 
     private JwtUtils() {
     }
@@ -41,7 +45,7 @@ public final class JwtUtils {
      */
     public static String createToken(Long userId, String username, String role) {
         Date now = new Date();
-        Date expire = new Date(now.getTime() + EXPIRE_SECONDS * 1000);
+        Date expire = new Date(now.getTime() + expireSeconds() * 1000);
 
         return Jwts.builder()
                 .subject(userId.toString())
@@ -49,7 +53,7 @@ public final class JwtUtils {
                 .claim("role", role)
                 .issuedAt(now)
                 .expiration(expire)
-                .signWith(KEY)
+                .signWith(signingKey())
                 .compact();
     }
 
@@ -65,7 +69,7 @@ public final class JwtUtils {
         }
         try {
             return Jwts.parser()
-                    .verifyWith(KEY)
+                    .verifyWith(signingKey())
                     .build()
                     .parseSignedClaims(token)
                     .getPayload();
@@ -121,5 +125,43 @@ public final class JwtUtils {
             return true;
         }
         return claims.getExpiration().before(new Date());
+    }
+
+    private static SecretKey signingKey() {
+        return Keys.hmacShaKeyFor(secret().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String secret() {
+        return firstNonBlank(
+                System.getProperty(SECRET_PROPERTY),
+                System.getenv(SECRET_ENV),
+                DEFAULT_SECRET
+        );
+    }
+
+    private static long expireSeconds() {
+        String value = firstNonBlank(
+                System.getProperty(EXPIRE_SECONDS_PROPERTY),
+                System.getProperty(EXPIRE_SECONDS_CAMEL_PROPERTY),
+                System.getenv(EXPIRE_SECONDS_ENV)
+        );
+        if (StrUtil.isBlank(value)) {
+            return DEFAULT_EXPIRE_SECONDS;
+        }
+        try {
+            long seconds = Long.parseLong(value.trim());
+            return seconds > 0 ? seconds : DEFAULT_EXPIRE_SECONDS;
+        } catch (NumberFormatException e) {
+            return DEFAULT_EXPIRE_SECONDS;
+        }
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StrUtil.isNotBlank(value)) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 }

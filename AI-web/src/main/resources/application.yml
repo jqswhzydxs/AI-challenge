@@ -7,7 +7,7 @@ spring:
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/challenge_cup_energy?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai}
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:50104657}
+    password: ${DB_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
@@ -38,8 +38,8 @@ knife4j:
 
 # JWT 配置
 jwt:
-  secret: steel-energy-optimization-platform-jwt-secret-key-2026
-  expire-seconds: 86400
+  secret: ${JWT_SECRET:steel-energy-demo-secret-change-me}
+  expire-seconds: ${JWT_EXPIRE_SECONDS:86400}
 
 # 日志
 logging:

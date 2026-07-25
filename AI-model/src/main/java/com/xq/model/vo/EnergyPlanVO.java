@@ -38,6 +38,18 @@ public class EnergyPlanVO {
     /** 总能源成本，元 */
     private BigDecimal totalEnergyCost;
 
+    /** 负荷预测摘要 */
+    private LoadForecastVO loadForecast;
+
+    /** 优化结果摘要 */
+    private EnergyOptimizationResultVO optimizationResult;
+
+    /** 运行策略列表 */
+    private List<EnergyStrategyVO> strategies;
+
+    /** 峰谷平电价政策 */
+    private PricePolicyVO pricePolicy;
+
     /** 方案明细列表 */
     private List<EnergyPlanDetailVO> details;
 }

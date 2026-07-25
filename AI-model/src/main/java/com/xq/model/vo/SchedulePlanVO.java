@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -25,6 +26,9 @@ public class SchedulePlanVO {
 
     /** 方案名称 */
     private String scheduleName;
+
+    /** 排产日期 */
+    private LocalDate scheduleDate;
 
     /** 计划开始时间 */
     private LocalDateTime planStartTime;
@@ -52,6 +56,15 @@ public class SchedulePlanVO {
 
     /** EC 降低百分比 */
     private BigDecimal ecReduction;
+
+    /** 节能率，% */
+    private BigDecimal energySavingsRate;
+
+    /** 平均负荷率，% */
+    private BigDecimal avgLoadRate;
+
+    /** 交期达成率，% */
+    private BigDecimal deadlineCompliance;
 
     /** 最优温度，℃ */
     private BigDecimal optimalTemperature;

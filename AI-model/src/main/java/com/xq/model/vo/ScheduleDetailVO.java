@@ -22,6 +22,12 @@ public class ScheduleDetailVO {
     /** 小时序号，0-23 */
     private Integer hourIndex;
 
+    /** 产线 ID */
+    private Long lineId;
+
+    /** 产线名称 */
+    private String lineName;
+
     /** 小时开始时间 */
     private LocalDateTime startTime;
 
@@ -36,4 +42,7 @@ public class ScheduleDetailVO {
 
     /** 小时预测电耗，kWh */
     private BigDecimal elecForecast;
+
+    /** 设备负荷率，% */
+    private BigDecimal equipmentLoadRate;
 }

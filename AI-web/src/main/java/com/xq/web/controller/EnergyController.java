@@ -1,9 +1,16 @@
 package com.xq.web.controller;
 
+import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.model.dto.EnergyPlanGenerateDTO;
 import com.xq.model.dto.PageQueryDTO;
+import com.xq.model.vo.EnergyAnalysisVO;
+import com.xq.model.vo.EnergyCarbonReductionVO;
+import com.xq.model.vo.EnergyConsumptionTrendVO;
+import com.xq.model.vo.EnergyDeviceStatusVO;
+import com.xq.model.vo.EnergyLoadForecastVO;
 import com.xq.model.vo.EnergyPlanVO;
+import com.xq.model.vo.EnergyTrendVO;
 import com.xq.model.vo.RealtimeDataVO;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.EnergyDataService;
@@ -15,6 +22,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 /**
  * 能源管理控制器.
@@ -55,5 +64,49 @@ public class EnergyController {
             @Parameter(description = "方案日期，格式 yyyy-MM-dd", required = true, example = "2026-07-21")
             @PathVariable("planDate") String planDate) {
         return energyPlanService.getPlanDetail(planDate);
+    }
+
+    @Operation(summary = "能源方案历史", description = "分页查询能源运行方案历史列表")
+    @GetMapping("/plans/history")
+    public Result<PageResult<EnergyPlanVO>> listPlanHistory(@ParameterObject PageQueryDTO query) {
+        return energyPlanService.listHistory(query);
+    }
+
+    @Operation(summary = "能源设备状态", description = "查询能源设备运行状态和最近负荷")
+    @GetMapping("/device-status")
+    public Result<List<EnergyDeviceStatusVO>> getDeviceStatus() {
+        return energyPlanService.getDeviceStatus();
+    }
+
+    @Operation(summary = "负荷预测", description = "按日期查询能源方案的小时负荷预测")
+    @GetMapping("/load-forecast")
+    public Result<EnergyLoadForecastVO> getLoadForecast(
+            @Parameter(description = "方案日期，格式 yyyy-MM-dd；不传则取最新能源方案")
+            @RequestParam(value = "planDate", required = false) String planDate) {
+        return energyPlanService.getLoadForecast(planDate);
+    }
+
+    @Operation(summary = "能耗趋势", description = "按小时或按日聚合实时能源数据，返回电、蒸汽、碳排趋势")
+    @GetMapping("/consumption-trend")
+    public Result<EnergyConsumptionTrendVO> getConsumptionTrend(@ParameterObject PageQueryDTO query) {
+        return energyPlanService.getConsumptionTrend(query);
+    }
+
+    @Operation(summary = "能源分析", description = "基于实时能源数据和最近评价指标返回能源分析摘要")
+    @GetMapping("/analysis")
+    public Result<EnergyAnalysisVO> getAnalysis(@ParameterObject PageQueryDTO query) {
+        return energyPlanService.getAnalysis(query);
+    }
+
+    @Operation(summary = "能源综合趋势", description = "从报表统计表返回能耗、成本、降本、碳减排趋势")
+    @GetMapping("/trend")
+    public Result<EnergyTrendVO> getTrend(@ParameterObject PageQueryDTO query) {
+        return energyPlanService.getTrend(query);
+    }
+
+    @Operation(summary = "碳减排数据", description = "从报表统计表返回碳减排和累计碳减排趋势")
+    @GetMapping("/carbon-reduction")
+    public Result<EnergyCarbonReductionVO> getCarbonReduction(@ParameterObject PageQueryDTO query) {
+        return energyPlanService.getCarbonReduction(query);
     }
 }

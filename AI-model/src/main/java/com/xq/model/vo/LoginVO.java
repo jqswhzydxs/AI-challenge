@@ -3,6 +3,8 @@ package com.xq.model.vo;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 登录响应 VO.
  *
@@ -24,4 +26,6 @@ public class LoginVO {
 
     /** 角色 */
     private String role;
+
+    private List<String> roles;
 }

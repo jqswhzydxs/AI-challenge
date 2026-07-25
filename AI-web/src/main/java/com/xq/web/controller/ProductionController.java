@@ -3,9 +3,11 @@ package com.xq.web.controller;
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.model.dto.PageQueryDTO;
+import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.vo.ImportPlanResultVO;
 import com.xq.model.vo.ProductionOrderVO;
+import com.xq.model.vo.ScheduleCompareVO;
 import com.xq.model.vo.SchedulePlanVO;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionOrderService;
@@ -62,12 +64,26 @@ public class ProductionController {
         return scheduleService.getPlanDetail(scheduleId);
     }
 
+    @Operation(summary = "按日期查询排产方案", description = "根据日期查询当天最新排产方案及小时明细")
+    @GetMapping("/schedules/date/{date}")
+    public Result<SchedulePlanVO> getScheduleByDate(
+            @Parameter(description = "排产日期，格式 yyyy-MM-dd", required = true, example = "2026-07-17")
+            @PathVariable("date") String date) {
+        return scheduleService.getPlanByDate(date);
+    }
+
     @Operation(summary = "排产方案历史列表", description = "分页查询所有排产方案，按创建时间倒序")
     @GetMapping("/schedule/history")
     public Result<PageResult<SchedulePlanVO>> listScheduleHistory(
-            @Parameter(description = "页码", example = "1") @RequestParam(defaultValue = "1") int page,
-            @Parameter(description = "每页条数", example = "10") @RequestParam(defaultValue = "10") int size) {
+            @Parameter(description = "页码", example = "1") @RequestParam(value = "page", defaultValue = "1") int page,
+            @Parameter(description = "每页条数", example = "10") @RequestParam(value = "size", defaultValue = "10") int size) {
         return scheduleService.listHistory(page, size);
+    }
+
+    @Operation(summary = "排产方案对比", description = "传入多个排产方案 ID，返回核心指标和相对基准方案的差异")
+    @PostMapping("/schedules/compare")
+    public Result<ScheduleCompareVO> compareSchedules(@Valid @RequestBody ScheduleCompareDTO dto) {
+        return scheduleService.compare(dto);
     }
 
     @Operation(summary = "导入日级排产 JSON", description = "联调用：导入算法端返回的日级排产 JSON，解析后保存到数据库")

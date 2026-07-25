@@ -7,9 +7,14 @@ import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
 import com.xq.mapper.EvaluationMetricMapper;
+import com.xq.mapper.ProductionLineMapper;
+import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
 import com.xq.model.entity.EvaluationMetric;
+import com.xq.model.entity.ProductionLine;
+import com.xq.model.vo.ScheduleCompareItemVO;
+import com.xq.model.vo.ScheduleCompareVO;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionScheduleService;
 import lombok.RequiredArgsConstructor;
@@ -26,12 +31,17 @@ import com.xq.model.entity.ProductionScheduleDetail;
 import com.alibaba.fastjson2.JSON;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -45,6 +55,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final ProductionSchedulePlanMapper schedulePlanMapper;
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
     private final EvaluationMetricMapper evaluationMetricMapper;
+    private final ProductionLineMapper productionLineMapper;
 
     @Override
     @Transactional
@@ -119,44 +130,22 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (plan == null) {
             throw new BusinessException(404, "排产方案不存在");
         }
+        return Result.ok(toPlanVO(plan, true));
+    }
 
-        List<ProductionScheduleDetail> details = scheduleDetailMapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionScheduleDetail>()
-                        .eq(ProductionScheduleDetail::getScheduleId, scheduleId)
-                        .orderByAsc(ProductionScheduleDetail::getHourIndex)
+    @Override
+    public Result<SchedulePlanVO> getPlanByDate(String scheduleDate) {
+        LocalDate date = parseDate(scheduleDate, "scheduleDate");
+        ProductionSchedulePlan plan = schedulePlanMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .eq(ProductionSchedulePlan::getScheduleDate, date)
+                        .orderByDesc(ProductionSchedulePlan::getCreateTime)
+                        .last("LIMIT 1")
         );
-
-        List<ScheduleDetailVO> detailVOs = details.stream().map(d -> ScheduleDetailVO.builder()
-                .detailId(d.getId())
-                .hourIndex(d.getHourIndex())
-                .startTime(d.getStartTime())
-                .endTime(d.getEndTime())
-                .demand(d.getDemand())
-                .production(d.getProduction())
-                .elecForecast(d.getElecForecast())
-                .build()).collect(Collectors.toList());
-
-        SchedulePlanVO vo = SchedulePlanVO.builder()
-                .scheduleId(plan.getId())
-                .taskId(plan.getTaskId())
-                .scheduleName(plan.getScheduleName())
-                .planStartTime(plan.getPlanStartTime())
-                .planHorizon(plan.getPlanHorizon())
-                .planUnit(plan.getPlanUnit())
-                .dataGranularity(plan.getDataGranularity())
-                .status(plan.getStatus())
-                .elecCoefficient(plan.getElecCoefficient())
-                .ecBaseline(plan.getEcBaseline())
-                .ecOptimized(plan.getEcOptimized())
-                .ecReduction(plan.getEcReduction())
-                .optimalTemperature(plan.getOptimalTemperature())
-                .optimalSpeed(plan.getOptimalSpeed())
-                .totalDemand(plan.getTotalDemand())
-                .totalProduction(plan.getTotalProduction())
-                .totalEnergy(plan.getTotalEnergy())
-                .details(detailVOs)
-                .build();
-        return Result.ok(vo);
+        if (plan == null) {
+            throw new BusinessException(404, "该日期暂无排产方案，请先导入 daily_plan 或生成排产方案");
+        }
+        return Result.ok(toPlanVO(plan, true));
     }
 
     @Override
@@ -301,34 +290,212 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                         .orderByDesc(ProductionSchedulePlan::getCreateTime)
         );
 
-        List<SchedulePlanVO> records = pageResult.getRecords().stream().map(plan -> {
-            long detailCount = scheduleDetailMapper.selectCount(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionScheduleDetail>()
-                            .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
-            );
-            return SchedulePlanVO.builder()
-                    .scheduleId(plan.getId())
-                    .taskId(plan.getTaskId())
+        List<SchedulePlanVO> records = pageResult.getRecords().stream()
+                .map(plan -> toPlanVO(plan, false))
+                .collect(Collectors.toList());
+
+        return Result.ok(PageResult.of(pageResult.getTotal(), page, size, records));
+    }
+
+    @Override
+    public Result<ScheduleCompareVO> compare(ScheduleCompareDTO dto) {
+        if (dto == null || dto.getScheduleIds() == null || dto.getScheduleIds().isEmpty()) {
+            throw new BusinessException(400, "排产方案 ID 列表不能为空");
+        }
+        Set<Long> orderedIds = dto.getScheduleIds().stream()
+                .filter(id -> id != null)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (orderedIds.isEmpty()) {
+            throw new BusinessException(400, "排产方案 ID 列表不能为空");
+        }
+
+        List<SchedulePlanVO> plans = new ArrayList<>();
+        for (Long id : orderedIds) {
+            ProductionSchedulePlan plan = schedulePlanMapper.selectById(id);
+            if (plan == null) {
+                throw new BusinessException(404, "排产方案不存在: " + id);
+            }
+            plans.add(toPlanVO(plan, false));
+        }
+
+        SchedulePlanVO baseline = plans.get(0);
+        BigDecimal baselineEnergy = value(baseline.getTotalEnergy());
+        BigDecimal baselineProduction = value(baseline.getTotalProduction());
+
+        List<ScheduleCompareItemVO> records = plans.stream().map(plan -> {
+            BigDecimal totalEnergy = value(plan.getTotalEnergy());
+            BigDecimal totalProduction = value(plan.getTotalProduction());
+            return ScheduleCompareItemVO.builder()
+                    .scheduleId(plan.getScheduleId())
                     .scheduleName(plan.getScheduleName())
-                    .planStartTime(plan.getPlanStartTime())
-                    .planHorizon(plan.getPlanHorizon())
-                    .planUnit(plan.getPlanUnit())
-                    .dataGranularity(plan.getDataGranularity())
-                    .status(plan.getStatus())
-                    .elecCoefficient(plan.getElecCoefficient())
+                    .scheduleDate(plan.getScheduleDate())
+                    .baseline(plan.getScheduleId().equals(baseline.getScheduleId()))
+                    .totalProduction(totalProduction)
+                    .productionDelta(totalProduction.subtract(baselineProduction))
+                    .totalEnergy(totalEnergy)
+                    .energyDelta(totalEnergy.subtract(baselineEnergy))
+                    .energyDeltaRate(percent(totalEnergy.subtract(baselineEnergy), baselineEnergy))
                     .ecBaseline(plan.getEcBaseline())
                     .ecOptimized(plan.getEcOptimized())
                     .ecReduction(plan.getEcReduction())
-                    .optimalTemperature(plan.getOptimalTemperature())
-                    .optimalSpeed(plan.getOptimalSpeed())
-                    .totalDemand(plan.getTotalDemand())
-                    .totalProduction(plan.getTotalProduction())
-                    .totalEnergy(plan.getTotalEnergy())
-                    .detailCount(detailCount > 0 ? (int) detailCount : null)
+                    .energySavingsRate(plan.getEnergySavingsRate())
+                    .avgLoadRate(plan.getAvgLoadRate())
+                    .deadlineCompliance(plan.getDeadlineCompliance())
+                    .detailCount(plan.getDetailCount())
                     .build();
         }).collect(Collectors.toList());
 
-        return Result.ok(PageResult.of(pageResult.getTotal(), page, size, records));
+        Long bestEnergyScheduleId = records.stream()
+                .min(Comparator.comparing(item -> value(item.getTotalEnergy())))
+                .map(ScheduleCompareItemVO::getScheduleId)
+                .orElse(null);
+        Long bestEcScheduleId = records.stream()
+                .min(Comparator.comparing(item -> value(item.getEcOptimized())))
+                .map(ScheduleCompareItemVO::getScheduleId)
+                .orElse(null);
+        BigDecimal maxEnergySavingsRate = records.stream()
+                .map(ScheduleCompareItemVO::getEnergySavingsRate)
+                .map(this::value)
+                .max(BigDecimal::compareTo)
+                .orElse(BigDecimal.ZERO);
+
+        ScheduleCompareVO vo = ScheduleCompareVO.builder()
+                .baselineScheduleId(baseline.getScheduleId())
+                .bestEnergyScheduleId(bestEnergyScheduleId)
+                .bestEcScheduleId(bestEcScheduleId)
+                .maxEnergySavingsRate(maxEnergySavingsRate)
+                .records(records)
+                .build();
+        return Result.ok(vo);
+    }
+
+    private SchedulePlanVO toPlanVO(ProductionSchedulePlan plan, boolean includeDetails) {
+        List<ProductionScheduleDetail> details = scheduleDetailMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionScheduleDetail>()
+                        .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
+                        .orderByAsc(ProductionScheduleDetail::getHourIndex)
+        );
+        ProductionLine defaultLine = defaultProductionLine();
+
+        List<ScheduleDetailVO> detailVOs = includeDetails ? details.stream().map(d -> {
+            Long lineId = d.getLineId() != null ? d.getLineId() : (defaultLine != null ? defaultLine.getId() : 1L);
+            String lineName = lineName(lineId, defaultLine);
+            return ScheduleDetailVO.builder()
+                    .detailId(d.getId())
+                    .hourIndex(d.getHourIndex())
+                    .lineId(lineId)
+                    .lineName(lineName)
+                    .startTime(d.getStartTime())
+                    .endTime(d.getEndTime())
+                    .demand(d.getDemand())
+                    .production(d.getProduction())
+                    .elecForecast(d.getElecForecast())
+                    .equipmentLoadRate(d.getEquipmentLoadRate() != null ? d.getEquipmentLoadRate() : avgLoadRate(details))
+                    .build();
+        }).collect(Collectors.toList()) : null;
+
+        return SchedulePlanVO.builder()
+                .scheduleId(plan.getId())
+                .taskId(plan.getTaskId())
+                .scheduleName(plan.getScheduleName())
+                .scheduleDate(plan.getScheduleDate())
+                .planStartTime(plan.getPlanStartTime())
+                .planHorizon(plan.getPlanHorizon())
+                .planUnit(plan.getPlanUnit())
+                .dataGranularity(plan.getDataGranularity())
+                .status(plan.getStatus())
+                .elecCoefficient(plan.getElecCoefficient())
+                .ecBaseline(plan.getEcBaseline())
+                .ecOptimized(plan.getEcOptimized())
+                .ecReduction(plan.getEcReduction())
+                .energySavingsRate(energySavingsRate(plan))
+                .avgLoadRate(avgLoadRate(details))
+                .deadlineCompliance(deadlineCompliance(details))
+                .optimalTemperature(plan.getOptimalTemperature())
+                .optimalSpeed(plan.getOptimalSpeed())
+                .totalDemand(plan.getTotalDemand())
+                .totalProduction(plan.getTotalProduction())
+                .totalEnergy(plan.getTotalEnergy())
+                .details(detailVOs)
+                .detailCount(!details.isEmpty() ? details.size() : null)
+                .build();
+    }
+
+    private ProductionLine defaultProductionLine() {
+        return productionLineMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionLine>()
+                        .orderByAsc(ProductionLine::getId)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private String lineName(Long lineId, ProductionLine defaultLine) {
+        if (defaultLine != null && defaultLine.getId() != null && defaultLine.getId().equals(lineId)) {
+            return defaultLine.getLineName();
+        }
+        ProductionLine line = lineId != null ? productionLineMapper.selectById(lineId) : null;
+        if (line != null && line.getLineName() != null && !line.getLineName().trim().isEmpty()) {
+            return line.getLineName();
+        }
+        return "智能轧钢产线";
+    }
+
+    private BigDecimal energySavingsRate(ProductionSchedulePlan plan) {
+        if (plan.getEcReduction() != null) {
+            return plan.getEcReduction();
+        }
+        BigDecimal baseline = value(plan.getEcBaseline());
+        BigDecimal optimized = plan.getEcOptimized() != null ? plan.getEcOptimized() : plan.getElecCoefficient();
+        if (baseline.compareTo(BigDecimal.ZERO) == 0 || optimized == null) {
+            return BigDecimal.ZERO;
+        }
+        return baseline.subtract(optimized)
+                .multiply(new BigDecimal("100"))
+                .divide(baseline, 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal avgLoadRate(List<ProductionScheduleDetail> details) {
+        if (details == null || details.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal totalProduction = details.stream()
+                .map(ProductionScheduleDetail::getProduction)
+                .map(this::value)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal maxProduction = details.stream()
+                .map(ProductionScheduleDetail::getProduction)
+                .map(this::value)
+                .max(BigDecimal::compareTo)
+                .orElse(BigDecimal.ZERO);
+        if (maxProduction.compareTo(BigDecimal.ZERO) == 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal capacity = maxProduction.multiply(new BigDecimal(details.size()));
+        return totalProduction.multiply(new BigDecimal("100"))
+                .divide(capacity, 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal deadlineCompliance(List<ProductionScheduleDetail> details) {
+        if (details == null || details.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        long feasible = details.stream()
+                .filter(d -> value(d.getProduction()).compareTo(value(d.getDemand())) >= 0)
+                .count();
+        return new BigDecimal(feasible).multiply(new BigDecimal("100"))
+                .divide(new BigDecimal(details.size()), 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal percent(BigDecimal numerator, BigDecimal denominator) {
+        if (denominator == null || denominator.compareTo(BigDecimal.ZERO) == 0) {
+            return BigDecimal.ZERO;
+        }
+        return numerator.multiply(new BigDecimal("100"))
+                .divide(denominator, 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal value(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
     }
 
     private BigDecimal getDecimal(Map<String, Object> source, String key, BigDecimal defaultValue) {

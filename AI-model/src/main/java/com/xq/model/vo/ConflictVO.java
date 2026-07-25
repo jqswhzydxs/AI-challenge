@@ -15,6 +15,12 @@ import java.time.LocalDateTime;
 @Builder
 public class ConflictVO {
 
+    /** 冲突 ID */
+    private Long conflictId;
+
+    /** 协同优化方案 ID */
+    private Long optimizeId;
+
     /** 冲突类型，如 ENERGY_SUPPLY_SHORTAGE */
     private String conflictType;
 
@@ -26,4 +32,7 @@ public class ConflictVO {
 
     /** 冲突说明 */
     private String description;
+
+    /** 是否已解决 */
+    private Boolean resolved;
 }

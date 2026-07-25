@@ -12,8 +12,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -38,8 +36,6 @@ public class DashboardServiceImpl implements DashboardService {
 
     @Override
     public Result<DashboardVO> overview() {
-        LocalDate today = LocalDate.now();
-
         // 今日/本月能耗：从 report_statistic 取最近一条 DAY + MONTH
         ReportStatistic dayStat = reportStatisticMapper.selectOne(
                 new LambdaQueryWrapper<ReportStatistic>()
@@ -97,7 +93,7 @@ public class DashboardServiceImpl implements DashboardService {
     private BigDecimal calcProductionProgress() {
         Long total = productionOrderMapper.selectCount(null);
         if (total == null || total == 0) {
-            return new BigDecimal("92.5");
+            return BigDecimal.ZERO;
         }
         Long completed = productionOrderMapper.selectCount(
                 new LambdaQueryWrapper<ProductionOrder>()
@@ -115,7 +111,7 @@ public class DashboardServiceImpl implements DashboardService {
                         .last("LIMIT 1")
         );
         if (latest == null || latest.getElecCoefficient() == null) {
-            return new BigDecimal("81.6");
+            return BigDecimal.ZERO;
         }
         // 负荷率 = 当前 EC / 基准 EC × 100
         BigDecimal ecBaseline = latest.getEcBaseline() != null ? latest.getEcBaseline() : new BigDecimal("14.0");
@@ -131,7 +127,7 @@ public class DashboardServiceImpl implements DashboardService {
                         .last("LIMIT 1")
         );
         if (latest == null || latest.getEr() == null) {
-            return new BigDecimal("95.2");
+            return BigDecimal.ZERO;
         }
         return latest.getEr();
     }

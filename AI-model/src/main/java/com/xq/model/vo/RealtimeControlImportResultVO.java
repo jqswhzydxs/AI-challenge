@@ -16,8 +16,12 @@ public class RealtimeControlImportResultVO {
     /** 任务 ID */
     private Long taskId;
 
+    private Boolean success;
+
     /** 最新控制记录 ID */
     private Long latestControlId;
+
+    private Long controlId;
 
     /** 新增记录数 */
     private Integer insertedCount;

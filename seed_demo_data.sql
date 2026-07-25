@@ -8,7 +8,7 @@ USE challenge_cup_energy;
 -- 3. 导入顺序固定：
 --    seed_demo_data.sql
 --    seed_steel_data.sql（清空能源实时/样本表，导入 35,040 行 15分钟数据，source='steel_data_cleaned'）
---    seed_steel_1min.sql（追加 132,481 行 1分钟数据，source='steel_data_1min_fixed'）
+--    seed_steel_1min.sql（追加 1分钟数据，source='steel_data_1min_fixed'；当前仓库旧联调样本为 132,481 行，算法组最新 PCHIP 正式口径为 3,155,026 行）
 --    seed_mpc_control.sql（清空 MPC，导入 120 条 final，日期 2026-07-17）
 --    seed_mpc_hourly.sql（追加 120 条 hourly，日期 2026-07-18）
 -- 4. 48 条合成能源曲线和 1 条 realtime_control.json 样本已移除，由真实数据替代。

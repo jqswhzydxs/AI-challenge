@@ -125,7 +125,9 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
 
         RealtimeControlImportResultVO vo = RealtimeControlImportResultVO.builder()
                 .taskId(task.getId())
+                .success(true)
                 .latestControlId(latestControlId)
+                .controlId(latestControlId)
                 .insertedCount(insertedCount)
                 .updatedCount(updatedCount)
                 .totalCount(records.size())
