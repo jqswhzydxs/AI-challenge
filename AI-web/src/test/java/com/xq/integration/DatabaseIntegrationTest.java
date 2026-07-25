@@ -12,6 +12,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class DatabaseIntegrationTest {
 
+    /**
+     * 用 H2 内存库模拟真实数据库，验证核心 SQL 查询能跑通。
+     * <p>
+     * 这里不依赖本机 MySQL，主要检查用户角色关联、能源方案聚合和碳减排汇总这些基础链路。
+     * </p>
+     */
     @Test
     void userRoleEnergyAndReportQueriesRunAgainstRealDatabase() throws Exception {
         try (Connection connection = DriverManager.getConnection("jdbc:h2:mem:ai_challenge;MODE=MySQL;DATABASE_TO_UPPER=false")) {
@@ -54,6 +60,12 @@ class DatabaseIntegrationTest {
         }
     }
 
+    /**
+     * 创建集成测试需要的最小表结构。
+     * <p>
+     * 只建本测试会用到的字段，避免测试被完整业务库结构拖慢。
+     * </p>
+     */
     private void createSchema(Connection connection) throws Exception {
         try (Statement statement = connection.createStatement()) {
             statement.execute("""
@@ -107,6 +119,12 @@ class DatabaseIntegrationTest {
         }
     }
 
+    /**
+     * 插入固定测试数据。
+     * <p>
+     * 数据覆盖三类场景：用户角色、能源方案明细、日报表碳减排。
+     * </p>
+     */
     private void seedData(Connection connection) throws Exception {
         try (Statement statement = connection.createStatement()) {
             statement.execute("INSERT INTO sys_user (id, username, password, status, deleted) VALUES (1, 'energy', '$2a$hash', 'ENABLE', 0)");
