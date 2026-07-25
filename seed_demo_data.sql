@@ -33,9 +33,10 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO sys_role (id, role_code, role_name, status, deleted, remark)
 VALUES
   (1000000000000000002, 'SYSTEM_ADMIN', '系统管理员', 'ENABLE', 0, '联调默认角色'),
-  (1000000000000000006, 'DISPATCHER', '调度员', 'ENABLE', 0, '联调默认角色'),
-  (1000000000000000007, 'ENERGY_ADMIN', '能源管理员', 'ENABLE', 0, '联调默认角色')
+  (1000000000000000006, 'PRODUCTION_DISPATCHER', '调度员', 'ENABLE', 0, '联调默认角色'),
+  (1000000000000000007, 'ENERGY_MANAGER', '能源管理员', 'ENABLE', 0, '联调默认角色')
 ON DUPLICATE KEY UPDATE
+  role_code = VALUES(role_code),
   role_name = VALUES(role_name),
   status = VALUES(status),
   deleted = 0,
