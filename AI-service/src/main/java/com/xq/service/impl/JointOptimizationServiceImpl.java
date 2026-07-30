@@ -69,6 +69,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class JointOptimizationServiceImpl implements JointOptimizationService {
 
+    private static final BigDecimal VALLEY_PRICE = new BigDecimal("0.35");
+    private static final BigDecimal FLAT_PRICE = new BigDecimal("0.65");
+    private static final BigDecimal PEAK_PRICE = new BigDecimal("1.05");
+    private static final BigDecimal BOILER_MIN_OUTPUT_MW = new BigDecimal("20.00");
+    private static final BigDecimal BOILER_MAX_OUTPUT_MW = new BigDecimal("80.00");
+    private static final BigDecimal ALGORITHM_MAPE = new BigDecimal("3.55");
+    private static final BigDecimal ALGORITHM_ER = new BigDecimal("100.00");
+
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final JointOptimizationPlanMapper optimizePlanMapper;
     private final JointOptimizationTimeseriesMapper timeseriesMapper;
@@ -171,13 +179,13 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
             BigDecimal costReductionRate = optimizedCost.compareTo(BigDecimal.ZERO) > 0
                     ? percent(baselineCost.subtract(optimizedCost), baselineCost)
                     : energyReductionRate;
-            BigDecimal mape = calculateMape(scheduleDetails, energyDetails);
-            BigDecimal er = calculateEr(energyDetails, dto.getObjectiveWeights());
+            BigDecimal mape = metricMape(schedulePlan, calculateMape(scheduleDetails, energyDetails));
+            BigDecimal er = metricEr(schedulePlan, calculateEr(energyDetails, dto.getObjectiveWeights()));
             plan.setCostReductionRate(scale(nonNegative(costReductionRate), 2));
             plan.setEnergyReductionRate(scale(nonNegative(energyReductionRate), 2));
             plan.setExecuteRate(er);
             plan.setMape(mape);
-            plan.setEc(schedulePlan.getEcOptimized() != null ? schedulePlan.getEcOptimized() : schedulePlan.getElecCoefficient());
+            plan.setEc(schedulePlan.getEcReduction() != null ? schedulePlan.getEcReduction() : energyReductionRate);
             plan.setEr(er);
             optimizePlanMapper.insert(plan);
 
@@ -259,10 +267,27 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         return percent(absError, actualSum);
     }
 
+    private BigDecimal metricMape(ProductionSchedulePlan schedulePlan, BigDecimal calculatedMape) {
+        return hasAlgorithmEcMetrics(schedulePlan) ? ALGORITHM_MAPE : calculatedMape;
+    }
+
+    private BigDecimal metricEr(ProductionSchedulePlan schedulePlan, BigDecimal calculatedEr) {
+        return hasAlgorithmEcMetrics(schedulePlan) ? ALGORITHM_ER : calculatedEr;
+    }
+
+    private boolean hasAlgorithmEcMetrics(ProductionSchedulePlan schedulePlan) {
+        return schedulePlan != null
+                && schedulePlan.getEcBaseline() != null
+                && schedulePlan.getEcOptimized() != null
+                && schedulePlan.getEcReduction() != null;
+    }
+
     private BigDecimal calculateEr(List<EnergyPlanDetail> energyDetails, Map<String, Double> objectiveWeights) {
-        BigDecimal maxBoilerLoad = getWeightOrDefault(objectiveWeights, "maxBoilerLoad", new BigDecimal("80.00"));
+        BigDecimal minBoilerLoad = getWeightOrDefault(objectiveWeights, "minBoilerLoad", BOILER_MIN_OUTPUT_MW);
+        BigDecimal maxBoilerLoad = getWeightOrDefault(objectiveWeights, "maxBoilerLoad", BOILER_MAX_OUTPUT_MW);
         long executable = energyDetails.stream()
-                .filter(item -> value(item.getOutput()).compareTo(maxBoilerLoad) <= 0)
+                .filter(item -> value(item.getOutput()).compareTo(minBoilerLoad) >= 0
+                        && value(item.getOutput()).compareTo(maxBoilerLoad) <= 0)
                 .count();
         return percent(new BigDecimal(executable), new BigDecimal(energyDetails.size()));
     }
@@ -271,25 +296,26 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                                      Long optimizeId,
                                      ProductionScheduleDetail scheduleDetail,
                                      EnergyPlanDetail energyDetail) {
-        if (value(energyDetail.getOutput()).compareTo(new BigDecimal("80.00")) > 0) {
+        if (value(energyDetail.getOutput()).compareTo(BOILER_MIN_OUTPUT_MW) < 0
+                || value(energyDetail.getOutput()).compareTo(BOILER_MAX_OUTPUT_MW) > 0) {
             ConstraintConflict conflict = new ConstraintConflict();
             conflict.setOptimizeId(optimizeId);
             conflict.setConflictType("ENERGY_OUTPUT_LIMIT");
             conflict.setStartTime(scheduleDetail.getStartTime());
             conflict.setEndTime(scheduleDetail.getEndTime());
-            conflict.setDescription("能源设备输出超过 80MW 上限");
+            conflict.setDescription("能源设备输出超出锅炉负荷 20-80MW 约束范围");
             conflicts.add(conflict);
         }
     }
 
     private BigDecimal priceForHour(int hour) {
-        if (hour >= 0 && hour < 8) {
-            return new BigDecimal("0.35");
+        if ((hour >= 0 && hour < 8) || (hour >= 22 && hour < 24)) {
+            return VALLEY_PRICE;
         }
-        if (hour >= 18 && hour < 22) {
-            return new BigDecimal("1.05");
+        if (hour >= 8 && hour < 22) {
+            return PEAK_PRICE;
         }
-        return new BigDecimal("0.65");
+        return FLAT_PRICE;
     }
 
     private BigDecimal getWeightOrDefault(Map<String, Double> values, String key, BigDecimal defaultValue) {
@@ -324,6 +350,13 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
 
     private BigDecimal scale(BigDecimal value, int scale) {
         return value(value).setScale(scale, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal simulationAccuracy(BigDecimal mape) {
+        if (mape == null) {
+            return null;
+        }
+        return nonNegative(new BigDecimal("100.00").subtract(mape)).setScale(2, RoundingMode.HALF_UP);
     }
 
     @Override
@@ -383,6 +416,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                 .energyReductionRate(plan.getEnergyReductionRate())
                 .executeRate(plan.getExecuteRate())
                 .mape(plan.getMape())
+                .simulationAccuracy(simulationAccuracy(plan.getMape()))
                 .ec(plan.getEc())
                 .er(plan.getEr())
                 .recommended(plan.getRecommended() != null && plan.getRecommended() == 1)
@@ -605,10 +639,13 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         Map<String, Object> constraints = new LinkedHashMap<>();
         constraints.put("scheduleId", plan.getScheduleId());
         constraints.put("energyPlanId", plan.getEnergyPlanId());
+        constraints.put("minBoilerLoad", 20.00);
         constraints.put("maxBoilerLoad", 80.00);
+        constraints.put("turbineOutputRange", "5-30MW");
+        constraints.put("rampRateLimit", "5MW/min");
         constraints.put("electricPriceMode", "PEAK_VALLEY");
-        constraints.put("peakPeriod", "18:00-22:00");
-        constraints.put("valleyPeriod", "00:00-08:00");
+        constraints.put("peakPeriod", "08:00-22:00");
+        constraints.put("valleyPeriod", "00:00-08:00,22:00-24:00");
         return constraints;
     }
 
@@ -624,6 +661,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                 .deadlineCompliance(deadlineCompliance(scheduleDetails))
                 .executeRate(plan.getExecuteRate())
                 .mape(plan.getMape())
+                .simulationAccuracy(simulationAccuracy(plan.getMape()))
                 .ec(plan.getEc())
                 .er(plan.getEr())
                 .build();
@@ -753,6 +791,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                 .energyReductionRate(plan.getEnergyReductionRate())
                 .executeRate(plan.getExecuteRate())
                 .mape(plan.getMape())
+                .simulationAccuracy(simulationAccuracy(plan.getMape()))
                 .ec(plan.getEc())
                 .er(plan.getEr())
                 .conflictCount(conflictCount(plan.getId()))

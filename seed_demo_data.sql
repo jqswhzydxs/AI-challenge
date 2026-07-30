@@ -107,8 +107,8 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO energy_equipment (id, equipment_code, equipment_name, equipment_type, min_output, max_output, efficiency, status, deleted, remark)
 VALUES
-  (3000000000000000101, 'BOILER_01', '锅炉 1', 'BOILER', 10.00, 60.00, 0.8900, 'AVAILABLE', 0, '联调设备'),
-  (3000000000000000102, 'TURBINE_01', '汽轮机 1', 'TURBINE', 5.00, 35.00, 0.9100, 'AVAILABLE', 0, '联调设备'),
+  (3000000000000000101, 'BOILER_01', '锅炉 1', 'BOILER', 20.00, 80.00, 0.8900, 'AVAILABLE', 0, '算法约束：锅炉负荷20-80MW'),
+  (3000000000000000102, 'TURBINE_01', '汽轮机 1', 'TURBINE', 5.00, 30.00, 0.9100, 'AVAILABLE', 0, '算法约束：汽机出力5-30MW'),
   (3000000000000000103, 'GRID_01', '外购电接口', 'GRID', 0.00, 100.00, 1.0000, 'AVAILABLE', 0, '联调设备')
 ON DUPLICATE KEY UPDATE
   equipment_name = VALUES(equipment_name),
@@ -156,6 +156,7 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO production_schedule_plan (
   id, task_id, schedule_name, schedule_date, plan_start_time, plan_horizon,
   plan_unit, data_granularity, status, objective, elec_coefficient,
+  ec_baseline, ec_optimized, ec_reduction, optimal_temperature, optimal_speed,
   total_demand, total_production, total_energy, raw_plan_json, deleted, remark
 )
 VALUES (
@@ -170,6 +171,11 @@ VALUES (
   'SUCCESS',
   'MIN_EC',
   13.278524,
+  14.0000,
+  13.2785,
+  5.15,
+  1140.0000,
+  11.0000,
   9.436921,
   9.486719,
   125.969628,
@@ -187,6 +193,11 @@ ON DUPLICATE KEY UPDATE
   status = VALUES(status),
   objective = VALUES(objective),
   elec_coefficient = VALUES(elec_coefficient),
+  ec_baseline = VALUES(ec_baseline),
+  ec_optimized = VALUES(ec_optimized),
+  ec_reduction = VALUES(ec_reduction),
+  optimal_temperature = VALUES(optimal_temperature),
+  optimal_speed = VALUES(optimal_speed),
   total_demand = VALUES(total_demand),
   total_production = VALUES(total_production),
   total_energy = VALUES(total_energy),
@@ -245,6 +256,82 @@ FROM (
   SELECT 23, 0.3771250134502479, 0.15
 ) s;
 
+-- 排产历史兜底数据：用于“生产排产-排产历史”页面，主案例仍以 2026-07-17 算法导入方案为准
+INSERT INTO algorithm_task (
+  id, task_type, status, progress, result_id, message, retry_count,
+  algorithm_name, algorithm_version, result_file_name, algorithm_response_json,
+  start_time, finish_time, deleted, remark
+)
+VALUES
+  (
+    4000000000000000011, 'PRODUCTION_SCHEDULE', 'SUCCESS', 100, 4000000000000000111,
+    '联调模拟排产历史生成成功', 0, 'DEMO_HISTORY_SCHEDULE', 'mock-v1',
+    'demo_schedule_history_20260715.json',
+    '{"timestamp":"2026-07-15 00:00:00","plan_horizon":24,"EC_baseline":14,"EC_optimized":13.2785,"EC_reduction":5.15,"demo":true}',
+    '2026-07-15 09:00:00', '2026-07-15 09:00:03', 0, '联调模拟排产历史'
+  ),
+  (
+    4000000000000000012, 'PRODUCTION_SCHEDULE', 'SUCCESS', 100, 4000000000000000112,
+    '联调模拟排产历史生成成功', 0, 'DEMO_HISTORY_SCHEDULE', 'mock-v1',
+    'demo_schedule_history_20260716.json',
+    '{"timestamp":"2026-07-16 00:00:00","plan_horizon":24,"EC_baseline":14,"EC_optimized":13.2785,"EC_reduction":5.15,"demo":true}',
+    '2026-07-16 09:00:00', '2026-07-16 09:00:03', 0, '联调模拟排产历史'
+  )
+ON DUPLICATE KEY UPDATE
+  status = VALUES(status),
+  progress = VALUES(progress),
+  result_id = VALUES(result_id),
+  message = VALUES(message),
+  algorithm_response_json = VALUES(algorithm_response_json),
+  finish_time = VALUES(finish_time),
+  deleted = 0,
+  remark = VALUES(remark);
+
+INSERT INTO production_schedule_plan (
+  id, task_id, schedule_name, schedule_date, plan_start_time, plan_horizon,
+  plan_unit, data_granularity, status, objective, elec_coefficient,
+  ec_baseline, ec_optimized, ec_reduction, optimal_temperature, optimal_speed,
+  total_demand, total_production, total_energy, raw_plan_json, deleted, remark
+)
+VALUES
+  (
+    4000000000000000111, 4000000000000000011, '2026-07-15 排产历史样例',
+    '2026-07-15', '2026-07-15 00:00:00', 24, 'hour', '1 minute',
+    'SUCCESS', 'MIN_EC', 13.2785, 14.0000, 13.2785, 5.15, 1140.0000, 11.0000,
+    9.120000, 9.120000, 121.099920,
+    '{"timestamp":"2026-07-15 00:00:00","plan_horizon":24,"EC_baseline":14,"EC_optimized":13.2785,"EC_reduction":5.15,"demo":true}',
+    0, '联调模拟排产历史'
+  ),
+  (
+    4000000000000000112, 4000000000000000012, '2026-07-16 排产历史样例',
+    '2026-07-16', '2026-07-16 00:00:00', 24, 'hour', '1 minute',
+    'SUCCESS', 'MIN_EC', 13.2785, 14.0000, 13.2785, 5.15, 1140.0000, 11.0000,
+    9.300000, 9.300000, 123.490050,
+    '{"timestamp":"2026-07-16 00:00:00","plan_horizon":24,"EC_baseline":14,"EC_optimized":13.2785,"EC_reduction":5.15,"demo":true}',
+    0, '联调模拟排产历史'
+  )
+ON DUPLICATE KEY UPDATE
+  schedule_name = VALUES(schedule_name),
+  schedule_date = VALUES(schedule_date),
+  plan_start_time = VALUES(plan_start_time),
+  plan_horizon = VALUES(plan_horizon),
+  plan_unit = VALUES(plan_unit),
+  data_granularity = VALUES(data_granularity),
+  status = VALUES(status),
+  objective = VALUES(objective),
+  elec_coefficient = VALUES(elec_coefficient),
+  ec_baseline = VALUES(ec_baseline),
+  ec_optimized = VALUES(ec_optimized),
+  ec_reduction = VALUES(ec_reduction),
+  optimal_temperature = VALUES(optimal_temperature),
+  optimal_speed = VALUES(optimal_speed),
+  total_demand = VALUES(total_demand),
+  total_production = VALUES(total_production),
+  total_energy = VALUES(total_energy),
+  raw_plan_json = VALUES(raw_plan_json),
+  deleted = 0,
+  remark = VALUES(remark);
+
 -- 排产评价指标，来自 daily_plan_v3.2.json
 INSERT INTO evaluation_metric (
   id, biz_type, biz_id, mape, ec_before, ec_after, er, cost_saving, carbon_reduction, calculate_time
@@ -253,10 +340,10 @@ VALUES (
   4000000000000000201,
   'SCHEDULE',
   4000000000000000101,
-  2.10,
+  3.55,
   14.0000,
   13.278524,
-  96.80,
+  100.00,
   6200.00,
   0.82,
   '2026-07-17 16:10:31'
@@ -269,6 +356,70 @@ ON DUPLICATE KEY UPDATE
   cost_saving = VALUES(cost_saving),
   carbon_reduction = VALUES(carbon_reduction),
   calculate_time = VALUES(calculate_time);
+
+-- 能源历史兜底数据：用于“能源运行-能源历史”页面，按算法报告避峰填谷口径构造 2026-07-17 小时样例
+INSERT INTO energy_realtime_data (
+  id, timestamp, raw_timestamp, electricity_consumption, steam_consumption, carbon_emission_tco2,
+  lagging_reactive_power_kvarh, leading_reactive_power_kvarh,
+  lagging_power_factor, leading_power_factor, nsm, week_status, day_of_week, load_type,
+  data_quality, source
+)
+SELECT
+  7000000000000000000 + s.hour_index,
+  DATE_ADD('2026-07-17 00:00:00', INTERVAL s.hour_index HOUR),
+  DATE_FORMAT(DATE_ADD('2026-07-17 00:00:00', INTERVAL s.hour_index HOUR), '%Y-%m-%d %H:%i:%s'),
+  s.electricity,
+  ROUND(s.electricity * 0.005, 4),
+  ROUND(s.electricity * 0.00057, 6),
+  ROUND(s.electricity * 0.18, 4),
+  ROUND(s.electricity * 0.04, 4),
+  94.5000,
+  98.0000,
+  s.hour_index * 3600,
+  'Weekday',
+  'Friday',
+  s.load_type,
+  'DEMO_NORMAL',
+  'demo_20260717_hourly'
+FROM (
+  SELECT 0 hour_index, 42.10 electricity, 'Medium_Load' load_type UNION ALL
+  SELECT 1, 48.30, 'Maximum_Load' UNION ALL
+  SELECT 2, 44.70, 'Medium_Load' UNION ALL
+  SELECT 3, 39.20, 'Medium_Load' UNION ALL
+  SELECT 4, 41.60, 'Medium_Load' UNION ALL
+  SELECT 5, 43.40, 'Medium_Load' UNION ALL
+  SELECT 6, 52.10, 'Maximum_Load' UNION ALL
+  SELECT 7, 49.80, 'Maximum_Load' UNION ALL
+  SELECT 8, 24.40, 'Light_Load' UNION ALL
+  SELECT 9, 22.30, 'Light_Load' UNION ALL
+  SELECT 10, 21.80, 'Light_Load' UNION ALL
+  SELECT 11, 20.90, 'Light_Load' UNION ALL
+  SELECT 12, 19.70, 'Light_Load' UNION ALL
+  SELECT 13, 18.60, 'Light_Load' UNION ALL
+  SELECT 14, 19.10, 'Light_Load' UNION ALL
+  SELECT 15, 20.20, 'Light_Load' UNION ALL
+  SELECT 16, 23.50, 'Light_Load' UNION ALL
+  SELECT 17, 25.30, 'Light_Load' UNION ALL
+  SELECT 18, 22.70, 'Light_Load' UNION ALL
+  SELECT 19, 21.40, 'Light_Load' UNION ALL
+  SELECT 20, 20.80, 'Light_Load' UNION ALL
+  SELECT 21, 19.90, 'Light_Load' UNION ALL
+  SELECT 22, 46.60, 'Maximum_Load' UNION ALL
+  SELECT 23, 45.20, 'Maximum_Load'
+) s
+ON DUPLICATE KEY UPDATE
+  electricity_consumption = VALUES(electricity_consumption),
+  steam_consumption = VALUES(steam_consumption),
+  carbon_emission_tco2 = VALUES(carbon_emission_tco2),
+  lagging_reactive_power_kvarh = VALUES(lagging_reactive_power_kvarh),
+  leading_reactive_power_kvarh = VALUES(leading_reactive_power_kvarh),
+  lagging_power_factor = VALUES(lagging_power_factor),
+  leading_power_factor = VALUES(leading_power_factor),
+  nsm = VALUES(nsm),
+  week_status = VALUES(week_status),
+  day_of_week = VALUES(day_of_week),
+  load_type = VALUES(load_type),
+  data_quality = VALUES(data_quality);
 
 -- 5. 首页告警和报表统计
 INSERT INTO warning_record (id, warning_type, level, message, biz_type, biz_id, warning_time, handled)
@@ -319,4 +470,5 @@ SELECT 'sys_user' table_name, COUNT(*) row_count FROM sys_user
 UNION ALL SELECT 'production_order', COUNT(*) FROM production_order
 UNION ALL SELECT 'production_schedule_plan', COUNT(*) FROM production_schedule_plan
 UNION ALL SELECT 'production_schedule_detail', COUNT(*) FROM production_schedule_detail WHERE schedule_id = 4000000000000000101
+UNION ALL SELECT 'energy_realtime_data_demo', COUNT(*) FROM energy_realtime_data WHERE source = 'demo_20260717_hourly'
 UNION ALL SELECT 'warning_record', COUNT(*) FROM warning_record;

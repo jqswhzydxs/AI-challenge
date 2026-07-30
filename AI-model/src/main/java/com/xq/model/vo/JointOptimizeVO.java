@@ -65,7 +65,10 @@ public class JointOptimizeVO {
     /** 仿真误差 MAPE，% */
     private BigDecimal mape;
 
-    /** 单位合格产品能耗 */
+    /** 仿真精度，% */
+    private BigDecimal simulationAccuracy;
+
+    /** EC降低率，% */
     private BigDecimal ec;
 
     /** 方案可执行率 ER，% */

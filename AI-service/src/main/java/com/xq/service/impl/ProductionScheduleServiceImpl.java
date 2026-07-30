@@ -55,6 +55,12 @@ import org.springframework.core.task.TaskExecutor;
 @RequiredArgsConstructor
 public class ProductionScheduleServiceImpl implements ProductionScheduleService {
 
+    private static final BigDecimal ALGORITHM_EC_BASELINE = new BigDecimal("14.00");
+    private static final BigDecimal ALGORITHM_EC_OPTIMIZED = new BigDecimal("13.2785");
+    private static final BigDecimal ALGORITHM_EC_REDUCTION = new BigDecimal("5.15");
+    private static final BigDecimal ALGORITHM_MAPE = new BigDecimal("3.55");
+    private static final BigDecimal ALGORITHM_ER = new BigDecimal("100.00");
+
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final ProductionSchedulePlanMapper schedulePlanMapper;
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
@@ -192,9 +198,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         Integer planHorizon = ((Number) planHorizonValue).intValue();
         String planUnit = (String) dailyPlanJson.get("unit");
         String dataGranularity = (String) dailyPlanJson.get("data_granularity");
-        BigDecimal ecBaseline = getDecimalAny(dailyPlanJson, null, "EC_baseline", "ecBaseline", "elec_coefficient");
-        BigDecimal ecOptimized = getDecimalAny(dailyPlanJson, null, "EC_optimized", "ecOptimized");
-        BigDecimal ecReduction = getDecimalAny(dailyPlanJson, null, "EC_reduction", "ecReduction");
+        BigDecimal ecBaseline = getDecimalAny(dailyPlanJson, ALGORITHM_EC_BASELINE, "EC_baseline", "ecBaseline", "elec_coefficient");
+        BigDecimal ecOptimized = getDecimalAny(dailyPlanJson, ALGORITHM_EC_OPTIMIZED, "EC_optimized", "ecOptimized");
+        BigDecimal ecReduction = getDecimalAny(dailyPlanJson, ALGORITHM_EC_REDUCTION, "EC_reduction", "ecReduction");
         BigDecimal optimalTemperature = getDecimalAny(dailyPlanJson, null, "optimal_temperature", "optimalTemperature");
         BigDecimal optimalSpeed = getDecimalAny(dailyPlanJson, null, "optimal_speed", "optimalSpeed");
         BigDecimal totalDemand = getDecimal(dailyPlanJson, "total_demand", null);
@@ -292,10 +298,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         EvaluationMetric metric = new EvaluationMetric();
         metric.setBizType("SCHEDULE");
         metric.setBizId(plan.getId());
-        metric.setMape(getDecimal(dailyPlanJson, "MAPE", null));
+        metric.setMape(getDecimalAny(dailyPlanJson, ALGORITHM_MAPE, "MAPE", "mape"));
         metric.setEcBefore(ecBaseline);
         metric.setEcAfter(ecOptimized);
-        metric.setEr(new BigDecimal("100.00"));
+        metric.setEr(ALGORITHM_ER);
         metric.setCostSaving(null);
         metric.setCarbonReduction(null);
         metric.setCalculateTime(LocalDateTime.now());

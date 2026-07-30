@@ -40,6 +40,10 @@ import java.util.Map;
 public class RealtimeControlServiceImpl implements RealtimeControlService {
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("H:mm:ss");
+    private static final BigDecimal BOILER_MIN_LOAD_MW = new BigDecimal("20.00");
+    private static final BigDecimal BOILER_MAX_LOAD_MW = new BigDecimal("80.00");
+    private static final BigDecimal TURBINE_MIN_OUTPUT_MW = new BigDecimal("5.00");
+    private static final BigDecimal TURBINE_MAX_OUTPUT_MW = new BigDecimal("30.00");
 
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final MpcRealtimeControlMapper mpcRealtimeControlMapper;
@@ -214,7 +218,19 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
         entity.setSteamNext5minT(getRequiredDecimal(forecast, "steam_next_5min", "steamNext5min", "steamNext5minT"));
         entity.setSourceFileName(sourceFileName);
         entity.setRawJson(JSON.toJSONString(record));
+        validateControlBounds(entity);
         return entity;
+    }
+
+    private void validateControlBounds(MpcRealtimeControl entity) {
+        if (entity.getBoilerLoadMw().compareTo(BOILER_MIN_LOAD_MW) < 0
+                || entity.getBoilerLoadMw().compareTo(BOILER_MAX_LOAD_MW) > 0) {
+            throw new BusinessException(400, "锅炉负荷必须在 20-80 MW 范围内");
+        }
+        if (entity.getTurbineOutputMw().compareTo(TURBINE_MIN_OUTPUT_MW) < 0
+                || entity.getTurbineOutputMw().compareTo(TURBINE_MAX_OUTPUT_MW) > 0) {
+            throw new BusinessException(400, "汽机出力必须在 5-30 MW 范围内");
+        }
     }
 
     private LocalDate parseControlDate(String controlDate, String timestamp) {

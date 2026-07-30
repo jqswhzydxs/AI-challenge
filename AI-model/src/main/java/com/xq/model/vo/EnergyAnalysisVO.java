@@ -39,6 +39,9 @@ public class EnergyAnalysisVO {
     /** 最近 MAPE，% */
     private BigDecimal mape;
 
+    /** 最近仿真精度，% */
+    private BigDecimal simulationAccuracy;
+
     /** 最近优化前 EC */
     private BigDecimal ecBefore;
 

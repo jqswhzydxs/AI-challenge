@@ -36,7 +36,10 @@ public class JointOptimizationResultSummaryVO {
     /** MAPE，% */
     private BigDecimal mape;
 
-    /** EC */
+    /** 仿真精度，% */
+    private BigDecimal simulationAccuracy;
+
+    /** EC降低率，% */
     private BigDecimal ec;
 
     /** ER，% */

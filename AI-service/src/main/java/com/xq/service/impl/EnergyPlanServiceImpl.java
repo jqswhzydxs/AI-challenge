@@ -72,6 +72,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class EnergyPlanServiceImpl implements EnergyPlanService {
 
+    private static final BigDecimal VALLEY_PRICE = new BigDecimal("0.35");
+    private static final BigDecimal FLAT_PRICE = new BigDecimal("0.65");
+    private static final BigDecimal PEAK_PRICE = new BigDecimal("1.05");
+    private static final BigDecimal BOILER_MIN_OUTPUT_MW = new BigDecimal("20.00");
+    private static final BigDecimal BOILER_MAX_OUTPUT_MW = new BigDecimal("80.00");
+
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final EnergyPlanMapper energyPlanMapper;
     private final EnergyPlanDetailMapper energyPlanDetailMapper;
@@ -266,7 +272,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
             EnergyPlanDetail detail = new EnergyPlanDetail();
             detail.setTimestamp(scheduleDetail.getStartTime());
             detail.setEquipmentId(equipmentId(constraints));
-            detail.setOutput(scale(production.multiply(new BigDecimal("100")), 6));
+            detail.setOutput(scale(deriveBoilerOutput(production), 6));
             detail.setElectricityConsumption(scale(electricity, 6));
             detail.setSteamConsumption(scale(electricity.multiply(new BigDecimal("0.005")), 6));
             detail.setCarbonEmissionTco2(scale(electricity.multiply(new BigDecimal("0.00057")), 6));
@@ -291,13 +297,13 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     }
 
     private BigDecimal priceForHour(int hour) {
-        if (hour >= 0 && hour < 8) {
-            return new BigDecimal("0.35");
+        if ((hour >= 0 && hour < 8) || (hour >= 22 && hour < 24)) {
+            return VALLEY_PRICE;
         }
-        if (hour >= 18 && hour < 22) {
-            return new BigDecimal("1.05");
+        if (hour >= 8 && hour < 22) {
+            return PEAK_PRICE;
         }
-        return new BigDecimal("0.65");
+        return FLAT_PRICE;
     }
 
     private BigDecimal steamUnitPrice(Map<String, Object> constraints) {
@@ -311,7 +317,24 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     }
 
     private BigDecimal deriveOutput(BigDecimal electricity) {
-        return value(electricity).multiply(new BigDecimal("0.08"));
+        return clamp(value(electricity).multiply(new BigDecimal("0.08")), BOILER_MIN_OUTPUT_MW, BOILER_MAX_OUTPUT_MW);
+    }
+
+    private BigDecimal deriveBoilerOutput(BigDecimal production) {
+        return clamp(BOILER_MIN_OUTPUT_MW.add(value(production).multiply(new BigDecimal("60"))),
+                BOILER_MIN_OUTPUT_MW,
+                BOILER_MAX_OUTPUT_MW);
+    }
+
+    private BigDecimal clamp(BigDecimal value, BigDecimal min, BigDecimal max) {
+        BigDecimal current = value(value);
+        if (current.compareTo(min) < 0) {
+            return min;
+        }
+        if (current.compareTo(max) > 0) {
+            return max;
+        }
+        return current;
     }
 
     private BigDecimal sum(List<BigDecimal> values) {
@@ -495,6 +518,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         BigDecimal totalElectricity = sum(records.stream().map(EnergyRealtimeData::getElectricityConsumption).toList());
         BigDecimal totalSteam = sum(records.stream().map(EnergyRealtimeData::getSteamConsumption).toList());
         BigDecimal totalCarbon = sum(records.stream().map(EnergyRealtimeData::getCarbonEmissionTco2).toList());
+        BigDecimal mape = latestMetric != null ? latestMetric.getMape() : null;
         return Result.ok(EnergyAnalysisVO.builder()
                 .sampleCount((long) records.size())
                 .totalElectricityConsumption(scale(totalElectricity, 2))
@@ -503,7 +527,8 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .totalEnergyCost(scale(estimateRealtimeCost(records), 2))
                 .avgLaggingPowerFactor(avg(records.stream().map(EnergyRealtimeData::getLaggingPowerFactor).toList(), 4))
                 .avgLeadingPowerFactor(avg(records.stream().map(EnergyRealtimeData::getLeadingPowerFactor).toList(), 4))
-                .mape(latestMetric != null ? latestMetric.getMape() : null)
+                .mape(mape)
+                .simulationAccuracy(simulationAccuracy(mape))
                 .ecBefore(latestMetric != null ? latestMetric.getEcBefore() : null)
                 .ecAfter(latestMetric != null ? latestMetric.getEcAfter() : null)
                 .er(latestMetric != null ? latestMetric.getEr() : null)
@@ -781,14 +806,14 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .type("PEAK_SHIFTING")
                 .title("峰段负荷削减")
                 .description("峰价时段优先降低非关键设备负荷，减少高电价区间外购电。")
-                .timeRange("18:00-22:00")
+                .timeRange("08:00-22:00")
                 .impactLevel("HIGH")
                 .build());
         items.add(EnergyStrategyVO.builder()
                 .type("VALLEY_PRODUCTION")
                 .title("谷段增产蓄能")
                 .description("将可平移生产任务和蓄热负荷安排到谷价时段，降低单位能耗成本。")
-                .timeRange("00:00-08:00")
+                .timeRange("00:00-08:00,22:00-24:00")
                 .impactLevel("MEDIUM")
                 .build());
         items.add(EnergyStrategyVO.builder()
@@ -816,20 +841,20 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                         PricePolicyPeriodVO.builder()
                                 .type("VALLEY")
                                 .name("谷段")
-                                .timeRange("00:00-08:00")
-                                .price(new BigDecimal("0.35"))
+                                .timeRange("00:00-08:00,22:00-24:00")
+                                .price(VALLEY_PRICE)
                                 .build(),
                         PricePolicyPeriodVO.builder()
                                 .type("FLAT")
                                 .name("平段")
-                                .timeRange("08:00-18:00,22:00-24:00")
-                                .price(new BigDecimal("0.65"))
+                                .timeRange("报告未设单独平段")
+                                .price(FLAT_PRICE)
                                 .build(),
                         PricePolicyPeriodVO.builder()
                                 .type("PEAK")
                                 .name("峰段")
-                                .timeRange("18:00-22:00")
-                                .price(new BigDecimal("1.05"))
+                                .timeRange("08:00-22:00")
+                                .price(PEAK_PRICE)
                                 .build()
                 ))
                 .build();
@@ -844,7 +869,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         if (details != null) {
             for (EnergyPlanDetail detail : details) {
                 int hour = detail.getTimestamp() != null ? detail.getTimestamp().getHour() : 0;
-                if (hour >= 18 && hour < 22) {
+                if (hour >= 8 && hour < 22) {
                     peakPremium = peakPremium.add(value(detail.getElectricityConsumption())
                             .multiply(new BigDecimal("0.08")));
                 }
@@ -883,6 +908,13 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
     private BigDecimal nonNegative(BigDecimal value) {
         return value != null && value.compareTo(BigDecimal.ZERO) > 0 ? value : BigDecimal.ZERO;
+    }
+
+    private BigDecimal simulationAccuracy(BigDecimal mape) {
+        if (mape == null) {
+            return null;
+        }
+        return nonNegative(new BigDecimal("100.00").subtract(mape)).setScale(2, RoundingMode.HALF_UP);
     }
 
     private String formatHourRange(LocalDateTime timestamp) {
