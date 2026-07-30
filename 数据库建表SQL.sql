@@ -333,6 +333,7 @@ CREATE TABLE IF NOT EXISTS energy_production_history (
 CREATE TABLE IF NOT EXISTS energy_plan (
   id BIGINT PRIMARY KEY COMMENT '能源方案ID',
   task_id BIGINT NOT NULL COMMENT '对应算法任务ID',
+  source_schedule_id BIGINT NULL COMMENT '来源排产方案ID，用于自动生成链路幂等判断',
   plan_date DATE NOT NULL COMMENT '方案日期',
   status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS' COMMENT '方案状态',
   objective VARCHAR(64) NULL COMMENT '优化目标',
@@ -348,6 +349,7 @@ CREATE TABLE IF NOT EXISTS energy_plan (
   deleted TINYINT NOT NULL DEFAULT 0,
   remark VARCHAR(500) NULL,
   KEY idx_energy_plan_task (task_id),
+  KEY idx_energy_plan_source_schedule (source_schedule_id),
   KEY idx_energy_plan_date (plan_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='能源运行方案主表';
 
@@ -541,3 +543,10 @@ ALTER TABLE production_schedule_plan ADD COLUMN ec_optimized DECIMAL(12,4) NULL 
 ALTER TABLE production_schedule_plan ADD COLUMN ec_reduction DECIMAL(12,4) NULL COMMENT 'EC降低百分比' AFTER ec_optimized;
 ALTER TABLE production_schedule_plan ADD COLUMN optimal_temperature DECIMAL(12,4) NULL COMMENT '最优温度，℃' AFTER ec_reduction;
 ALTER TABLE production_schedule_plan ADD COLUMN optimal_speed DECIMAL(12,4) NULL COMMENT '最优速度' AFTER optimal_temperature;
+
+-- ==========================================
+-- v1.2 增量升级：能源方案记录来源排产方案
+-- 对已有的 energy_plan 表执行下面 ALTER
+-- ==========================================
+ALTER TABLE energy_plan ADD COLUMN source_schedule_id BIGINT NULL COMMENT '来源排产方案ID，用于自动生成链路幂等判断' AFTER task_id;
+ALTER TABLE energy_plan ADD INDEX idx_energy_plan_source_schedule (source_schedule_id);

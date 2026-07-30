@@ -39,8 +39,10 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import com.xq.model.vo.EnergyPlanVO;
 import com.xq.model.vo.EnergyPlanDetailVO;
@@ -79,77 +81,125 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
     private final ReportStatisticMapper reportStatisticMapper;
     private final EvaluationMetricMapper evaluationMetricMapper;
+    private TaskExecutor algorithmTaskExecutor;
+
+    @Autowired(required = false)
+    public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
+        this.algorithmTaskExecutor = algorithmTaskExecutor;
+    }
 
     @Override
-    @Transactional
     public Result<TaskVO> generate(EnergyPlanGenerateDTO dto) {
         if (dto == null) {
             throw new BusinessException(400, "请求体不能为空");
         }
         LocalDate planDate = parseDate(dto.getPlanDate(), "planDate");
-        LocalDateTime planStart = planDate.atStartOfDay();
-        List<EnergyPlanDetail> derivedDetails = deriveEnergyDetails(dto, planDate, planStart);
-        if (derivedDetails.isEmpty()) {
-            throw new BusinessException(400, "没有可用于生成能源运行方案的数据，请先导入实时能源数据或日级排产方案");
-        }
 
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.ENERGY_PLAN);
         task.setStatus(TaskStatus.PENDING);
         task.setProgress(0);
-        task.setMessage("能源运行方案派生计算中");
+        task.setMessage("能源运行方案任务已创建，等待执行");
         task.setRetryCount(0);
         task.setFrontendRequestJson(JSON.toJSONString(dto));
         task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
+        runAlgorithmTask(() -> generateEnergyPlanResult(task, dto, planDate));
+
+        return Result.ok("能源运行任务已创建", toTaskVO(task));
+    }
+
+    EnergyPlan generateDerivedPlanForSchedule(ProductionSchedulePlan schedulePlan, Map<String, Object> constraints) {
+        if (schedulePlan == null || schedulePlan.getId() == null || schedulePlan.getScheduleDate() == null) {
+            throw new BusinessException(400, "排产方案不能为空");
+        }
+        EnergyPlanGenerateDTO dto = new EnergyPlanGenerateDTO();
+        dto.setPlanDate(schedulePlan.getScheduleDate().toString());
+        dto.setTimeRange("24h");
+        dto.setElectricPriceMode("PEAK_VALLEY");
+        dto.setObjective("ENERGY_OPERATION_ASSESSMENT");
+        dto.setConstraints(constraints);
+
+        AlgorithmTask task = new AlgorithmTask();
+        task.setTaskType(TaskType.ENERGY_PLAN);
+        task.setStatus(TaskStatus.PENDING);
+        task.setProgress(0);
+        task.setMessage("能源运行方案自动生成任务已创建，等待执行");
+        task.setRetryCount(0);
+        task.setFrontendRequestJson(JSON.toJSONString(Map.of(
+                "autoGenerate", true,
+                "sourceScheduleId", schedulePlan.getId(),
+                "request", dto
+        )));
+        task.setStartTime(LocalDateTime.now());
+        algorithmTaskMapper.insert(task);
+
+        return generateEnergyPlanResult(task, dto, schedulePlan.getScheduleDate(), schedulePlan);
+    }
+
+    private EnergyPlan generateEnergyPlanResult(AlgorithmTask task, EnergyPlanGenerateDTO dto, LocalDate planDate) {
+        return generateEnergyPlanResult(task, dto, planDate, null);
+    }
+
+    private EnergyPlan generateEnergyPlanResult(AlgorithmTask task,
+                                                EnergyPlanGenerateDTO dto,
+                                                LocalDate planDate,
+                                                ProductionSchedulePlan sourceSchedulePlan) {
+        markTaskRunning(task, "能源运行方案派生计算中");
         EnergyPlan plan = new EnergyPlan();
-        plan.setTaskId(task.getId());
-        plan.setPlanDate(planDate);
-        plan.setStatus(TaskStatus.SUCCESS);
-        plan.setObjective(dto.getObjective());
-        plan.setElectricPriceMode(dto.getElectricPriceMode());
-        plan.setTimeInterval(60);
-        BigDecimal electricityCost = BigDecimal.ZERO;
-        BigDecimal steamCost = BigDecimal.ZERO;
-        for (EnergyPlanDetail detail : derivedDetails) {
-            electricityCost = electricityCost.add(detail.getElectricityConsumption().multiply(priceForHour(detail.getTimestamp().getHour())));
-            steamCost = steamCost.add(detail.getSteamConsumption().multiply(steamUnitPrice(dto.getConstraints())));
+        try {
+            LocalDateTime planStart = planDate.atStartOfDay();
+            List<EnergyPlanDetail> derivedDetails = sourceSchedulePlan != null
+                    ? deriveFromSchedule(sourceSchedulePlan, dto.getConstraints())
+                    : deriveEnergyDetails(dto, planDate, planStart);
+            if (derivedDetails.isEmpty()) {
+                throw new BusinessException(400, "没有可用于生成能源运行方案的数据，请先导入实时能源数据或日级排产方案");
+            }
+
+            plan.setTaskId(task.getId());
+            if (sourceSchedulePlan != null) {
+                plan.setSourceScheduleId(sourceSchedulePlan.getId());
+                plan.setRemark("自动生成：基于排产方案 " + sourceSchedulePlan.getId() + " 派生");
+            }
+            plan.setPlanDate(planDate);
+            plan.setStatus(TaskStatus.RUNNING);
+            plan.setObjective(dto.getObjective());
+            plan.setElectricPriceMode(dto.getElectricPriceMode());
+            plan.setTimeInterval(60);
+            BigDecimal electricityCost = BigDecimal.ZERO;
+            BigDecimal steamCost = BigDecimal.ZERO;
+            for (EnergyPlanDetail detail : derivedDetails) {
+                electricityCost = electricityCost.add(detail.getElectricityConsumption().multiply(priceForHour(detail.getTimestamp().getHour())));
+                steamCost = steamCost.add(detail.getSteamConsumption().multiply(steamUnitPrice(dto.getConstraints())));
+            }
+            plan.setElectricityCost(scale(electricityCost, 2));
+            plan.setSteamCost(scale(steamCost, 2));
+            plan.setTotalEnergyCost(plan.getElectricityCost().add(plan.getSteamCost()));
+            energyPlanMapper.insert(plan);
+
+            for (EnergyPlanDetail detail : derivedDetails) {
+                detail.setPlanId(plan.getId());
+                detail.setEnergyCost(scale(
+                        detail.getElectricityConsumption().multiply(priceForHour(detail.getTimestamp().getHour()))
+                                .add(detail.getSteamConsumption().multiply(steamUnitPrice(dto.getConstraints()))),
+                        2
+                ));
+                energyPlanDetailMapper.insert(detail);
+            }
+
+            plan.setStatus(TaskStatus.SUCCESS);
+            energyPlanMapper.updateById(plan);
+            markTaskSuccess(task, plan.getId(), "能源运行方案已生成");
+            return plan;
+        } catch (RuntimeException e) {
+            if (plan.getId() != null) {
+                plan.setStatus(TaskStatus.FAILED);
+                energyPlanMapper.updateById(plan);
+            }
+            markTaskFailed(task, e);
+            throw e;
         }
-        plan.setElectricityCost(scale(electricityCost, 2));
-        plan.setSteamCost(scale(steamCost, 2));
-        plan.setTotalEnergyCost(plan.getElectricityCost().add(plan.getSteamCost()));
-        energyPlanMapper.insert(plan);
-
-        for (EnergyPlanDetail detail : derivedDetails) {
-            detail.setPlanId(plan.getId());
-            detail.setEnergyCost(scale(
-                    detail.getElectricityConsumption().multiply(priceForHour(detail.getTimestamp().getHour()))
-                            .add(detail.getSteamConsumption().multiply(steamUnitPrice(dto.getConstraints()))),
-                    2
-            ));
-            energyPlanDetailMapper.insert(detail);
-        }
-
-        task.setStatus(TaskStatus.SUCCESS);
-        task.setProgress(100);
-        task.setMessage("能源运行方案已生成");
-        task.setResultId(plan.getId());
-        task.setFinishTime(LocalDateTime.now());
-        algorithmTaskMapper.updateById(task);
-
-        TaskVO vo = TaskVO.builder()
-                .taskId(task.getId())
-                .taskType(task.getTaskType())
-                .status(task.getStatus())
-                .progress(task.getProgress())
-                .message(task.getMessage())
-                .resultId(task.getResultId())
-                .errorMessage(task.getErrorMessage())
-                .createTime(task.getStartTime())
-                .updateTime(task.getFinishTime())
-                .build();
-        return Result.ok("能源运行任务已创建", vo);
     }
 
     private List<EnergyPlanDetail> deriveEnergyDetails(EnergyPlanGenerateDTO dto, LocalDate planDate, LocalDateTime planStart) {
@@ -200,6 +250,10 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         if (schedulePlan == null) {
             return List.of();
         }
+        return deriveFromSchedule(schedulePlan, constraints);
+    }
+
+    private List<EnergyPlanDetail> deriveFromSchedule(ProductionSchedulePlan schedulePlan, Map<String, Object> constraints) {
         List<ProductionScheduleDetail> scheduleDetails = scheduleDetailMapper.selectList(
                 new LambdaQueryWrapper<ProductionScheduleDetail>()
                         .eq(ProductionScheduleDetail::getScheduleId, schedulePlan.getId())
@@ -266,6 +320,54 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
     private BigDecimal value(BigDecimal value) {
         return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private void runAlgorithmTask(Runnable runnable) {
+        if (algorithmTaskExecutor == null) {
+            runnable.run();
+            return;
+        }
+        algorithmTaskExecutor.execute(runnable);
+    }
+
+    private void markTaskRunning(AlgorithmTask task, String message) {
+        task.setStatus(TaskStatus.RUNNING);
+        task.setProgress(10);
+        task.setMessage(message);
+        task.setStartTime(task.getStartTime() != null ? task.getStartTime() : LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
+    }
+
+    private void markTaskSuccess(AlgorithmTask task, Long resultId, String message) {
+        task.setStatus(TaskStatus.SUCCESS);
+        task.setProgress(100);
+        task.setMessage(message);
+        task.setResultId(resultId);
+        task.setFinishTime(LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
+    }
+
+    private void markTaskFailed(AlgorithmTask task, RuntimeException e) {
+        task.setStatus(TaskStatus.FAILED);
+        task.setProgress(100);
+        task.setMessage("任务执行失败");
+        task.setErrorMessage(e.getMessage());
+        task.setFinishTime(LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
+    }
+
+    private TaskVO toTaskVO(AlgorithmTask task) {
+        return TaskVO.builder()
+                .taskId(task.getId())
+                .taskType(task.getTaskType())
+                .status(task.getStatus())
+                .progress(task.getProgress())
+                .message(task.getMessage())
+                .resultId(task.getResultId())
+                .errorMessage(task.getErrorMessage())
+                .createTime(task.getStartTime())
+                .updateTime(task.getFinishTime())
+                .build();
     }
 
     private BigDecimal scale(BigDecimal value, int scale) {

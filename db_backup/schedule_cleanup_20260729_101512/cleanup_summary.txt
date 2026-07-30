@@ -1,0 +1,22 @@
+Before cleanup
+target_schedule_ids=[2079490502452948993, 2081219222897274881]
+schedule_task_ids=[2079490502343897089, 2081219222825971713]
+joint_ids_referencing_targets=[]
+production_schedule_plan_total=3
+production_schedule_detail_for_targets=48
+algorithm_task_for_targets=2
+
+Deleted
+constraint_conflict=0
+joint_optimization_timeseries=0
+joint_optimization_plan=0
+production_schedule_detail=48
+production_schedule_plan=2
+algorithm_task=2
+
+After cleanup
+production_schedule_plan_total=1
+production_schedule_detail_total=24
+target_schedule_rows_remaining=0
+target_detail_rows_remaining=0
+target_task_rows_remaining=0

@@ -17,6 +17,7 @@ import com.xq.model.entity.ProductionSchedulePlan;
 import com.xq.model.vo.ImportPlanResultVO;
 import com.xq.model.vo.SchedulePlanVO;
 import com.xq.model.vo.TaskVO;
+import com.xq.service.PlanAutoGenerationService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -135,7 +136,7 @@ class ProductionScheduleServiceImplTest {
         verify(scheduleDetailMapper, times(3)).insert(detailCaptor.capture());
         assertEquals(List.of(0, 1, 2), detailCaptor.getAllValues().stream().map(ProductionScheduleDetail::getHourIndex).toList());
         assertEquals(new BigDecimal("4500.0000"), detailCaptor.getAllValues().get(0).getElecForecast());
-        verify(algorithmTaskMapper).updateById(any(AlgorithmTask.class));
+        verify(algorithmTaskMapper, times(2)).updateById(any(AlgorithmTask.class));
     }
 
     @Test
@@ -151,6 +152,8 @@ class ProductionScheduleServiceImplTest {
                 evaluationMetricMapper,
                 mock(ProductionLineMapper.class)
         );
+        PlanAutoGenerationService planAutoGenerationService = mock(PlanAutoGenerationService.class);
+        service.setPlanAutoGenerationService(planAutoGenerationService);
 
         doAnswer(invocation -> {
             AlgorithmTask task = invocation.getArgument(0);
@@ -189,6 +192,7 @@ class ProductionScheduleServiceImplTest {
         assertEquals("SCHEDULE", metricCaptor.getValue().getBizType());
         assertEquals(40L, metricCaptor.getValue().getBizId());
         assertEquals(new BigDecimal("2.50"), metricCaptor.getValue().getMape());
+        verify(planAutoGenerationService).autoGenerateAfterScheduleImported(40L);
     }
 
     @Test

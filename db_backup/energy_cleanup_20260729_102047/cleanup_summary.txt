@@ -1,0 +1,27 @@
+Before cleanup
+target_energy_plan_id=2079397804341497858
+energy_task_ids=[2079397804341497857]
+joint_ids_referencing_target=[2079397813208256514]
+joint_task_ids=[2079397813145341954]
+energy_plan_total=2
+energy_plan_detail_for_target=12
+joint_timeseries_for_target=12
+constraint_conflict_for_target=0
+algorithm_task_for_target=2
+
+Deleted
+constraint_conflict=0
+joint_optimization_timeseries=12
+joint_optimization_plan=1
+energy_plan_detail=12
+energy_plan=1
+algorithm_task=2
+
+After cleanup
+energy_plan_total=1
+energy_plan_detail_total=24
+joint_optimization_plan_total=1
+target_energy_plan_rows_remaining=0
+target_detail_rows_remaining=0
+target_joint_rows_remaining=0
+target_task_rows_remaining=0

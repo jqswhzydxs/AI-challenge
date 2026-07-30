@@ -61,7 +61,7 @@ public class DashboardServiceImpl implements DashboardService {
         // 能源负荷率：取最近一次排产方案的负荷率
         BigDecimal energyLoadRate = calcEnergyLoadRate();
 
-        // 方案执行率：取最近一次协同优化的 ER
+        // 方案执行率：取最近一次协同评估的 ER
         BigDecimal schemeExecuteRate = calcSchemeExecuteRate();
 
         // 告警

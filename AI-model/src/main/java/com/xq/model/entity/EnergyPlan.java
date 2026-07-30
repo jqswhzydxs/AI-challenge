@@ -21,6 +21,8 @@ public class EnergyPlan {
     private Long id;
     /** 对应算法任务 ID */
     private Long taskId;
+    /** 来源排产方案 ID，用于自动生成链路幂等判断 */
+    private Long sourceScheduleId;
     /** 方案日期 */
     private LocalDate planDate;
     /** 方案状态 */

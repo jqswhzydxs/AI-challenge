@@ -42,8 +42,10 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -58,7 +60,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 协同优化服务实现.
+ * 协同评估服务实现.
  *
  * @author XQ
  * @since 1.0.0
@@ -75,111 +77,142 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
     private final EnergyPlanMapper energyPlanMapper;
     private final EnergyPlanDetailMapper energyPlanDetailMapper;
+    private TaskExecutor algorithmTaskExecutor;
+
+    @Autowired(required = false)
+    public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
+        this.algorithmTaskExecutor = algorithmTaskExecutor;
+    }
 
     @Override
-    @Transactional
     public Result<TaskVO> generate(JointOptimizeDTO dto) {
-        ProductionSchedulePlan schedulePlan = schedulePlanMapper.selectById(dto.getScheduleId());
-        if (schedulePlan == null) {
-            throw new BusinessException(400, "排产方案不存在");
+        if (dto == null) {
+            throw new BusinessException(400, "请求体不能为空");
         }
-        EnergyPlan energyPlan = energyPlanMapper.selectById(dto.getEnergyPlanId());
-        if (energyPlan == null) {
-            throw new BusinessException(400, "能源方案不存在");
-        }
-        List<ProductionScheduleDetail> scheduleDetails = scheduleDetailMapper.selectList(
-                new LambdaQueryWrapper<ProductionScheduleDetail>()
-                        .eq(ProductionScheduleDetail::getScheduleId, schedulePlan.getId())
-                        .orderByAsc(ProductionScheduleDetail::getHourIndex)
-        );
-        if (scheduleDetails.isEmpty()) {
-            throw new BusinessException(400, "排产方案没有明细，无法生成协同优化结果");
-        }
-        List<EnergyPlanDetail> energyDetails = energyPlanDetailMapper.selectList(
-                new LambdaQueryWrapper<EnergyPlanDetail>()
-                        .eq(EnergyPlanDetail::getPlanId, energyPlan.getId())
-                        .orderByAsc(EnergyPlanDetail::getTimestamp)
-        );
-        if (energyDetails.isEmpty()) {
-            throw new BusinessException(400, "能源方案没有明细，无法生成协同优化结果");
-        }
-
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.JOINT_OPTIMIZATION);
         task.setStatus(TaskStatus.PENDING);
         task.setProgress(0);
-        task.setMessage("协同优化评价派生计算中");
+        task.setMessage("协同评估任务已创建，等待执行");
         task.setRetryCount(0);
         task.setFrontendRequestJson(JSON.toJSONString(dto));
         task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
+        runAlgorithmTask(() -> generateJointEvaluationResult(task, dto));
+
+        return Result.ok("协同评估任务已创建", toTaskVO(task));
+    }
+
+    JointOptimizationPlan generateEvaluationForPlans(Long scheduleId, Long energyPlanId) {
+        JointOptimizeDTO dto = new JointOptimizeDTO();
+        dto.setScheduleId(scheduleId);
+        dto.setEnergyPlanId(energyPlanId);
+
+        AlgorithmTask task = new AlgorithmTask();
+        task.setTaskType(TaskType.JOINT_OPTIMIZATION);
+        task.setStatus(TaskStatus.PENDING);
+        task.setProgress(0);
+        task.setMessage("协同评估自动生成任务已创建，等待执行");
+        task.setRetryCount(0);
+        task.setFrontendRequestJson(JSON.toJSONString(Map.of(
+                "autoGenerate", true,
+                "scheduleId", scheduleId,
+                "energyPlanId", energyPlanId
+        )));
+        task.setStartTime(LocalDateTime.now());
+        algorithmTaskMapper.insert(task);
+
+        return generateJointEvaluationResult(task, dto);
+    }
+
+    private JointOptimizationPlan generateJointEvaluationResult(AlgorithmTask task, JointOptimizeDTO dto) {
+        markTaskRunning(task, "生产计划与能源运行方案协同评估、约束校验和效果分析中");
         JointOptimizationPlan plan = new JointOptimizationPlan();
-        plan.setTaskId(task.getId());
-        plan.setScheduleId(schedulePlan.getId());
-        plan.setEnergyPlanId(energyPlan.getId());
-        plan.setStatus(TaskStatus.SUCCESS);
-        plan.setRecommended(1);
-        BigDecimal optimizedEnergy = value(schedulePlan.getTotalEnergy());
-        if (optimizedEnergy.compareTo(BigDecimal.ZERO) == 0) {
-            optimizedEnergy = sum(scheduleDetails.stream().map(ProductionScheduleDetail::getElecForecast).toList());
-        }
-        BigDecimal baselineEnergy = baselineEnergy(schedulePlan, scheduleDetails);
-        BigDecimal energyReductionRate = percent(baselineEnergy.subtract(optimizedEnergy), baselineEnergy);
-        BigDecimal baselineCost = baselineCost(scheduleDetails, schedulePlan);
-        BigDecimal optimizedCost = value(energyPlan.getTotalEnergyCost());
-        BigDecimal costReductionRate = optimizedCost.compareTo(BigDecimal.ZERO) > 0
-                ? percent(baselineCost.subtract(optimizedCost), baselineCost)
-                : energyReductionRate;
-        BigDecimal mape = calculateMape(scheduleDetails, energyDetails);
-        BigDecimal er = calculateEr(energyDetails, dto.getObjectiveWeights());
-        plan.setCostReductionRate(scale(nonNegative(costReductionRate), 2));
-        plan.setEnergyReductionRate(scale(nonNegative(energyReductionRate), 2));
-        plan.setExecuteRate(er);
-        plan.setMape(mape);
-        plan.setEc(schedulePlan.getEcOptimized() != null ? schedulePlan.getEcOptimized() : schedulePlan.getElecCoefficient());
-        plan.setEr(er);
-        optimizePlanMapper.insert(plan);
+        try {
+            ProductionSchedulePlan schedulePlan = schedulePlanMapper.selectById(dto.getScheduleId());
+            if (schedulePlan == null) {
+                throw new BusinessException(400, "排产方案不存在");
+            }
+            EnergyPlan energyPlan = energyPlanMapper.selectById(dto.getEnergyPlanId());
+            if (energyPlan == null) {
+                throw new BusinessException(400, "能源方案不存在");
+            }
+            List<ProductionScheduleDetail> scheduleDetails = scheduleDetailMapper.selectList(
+                    new LambdaQueryWrapper<ProductionScheduleDetail>()
+                            .eq(ProductionScheduleDetail::getScheduleId, schedulePlan.getId())
+                            .orderByAsc(ProductionScheduleDetail::getHourIndex)
+            );
+            if (scheduleDetails.isEmpty()) {
+                throw new BusinessException(400, "排产方案没有明细，无法生成协同评估结果");
+            }
+            List<EnergyPlanDetail> energyDetails = energyPlanDetailMapper.selectList(
+                    new LambdaQueryWrapper<EnergyPlanDetail>()
+                            .eq(EnergyPlanDetail::getPlanId, energyPlan.getId())
+                            .orderByAsc(EnergyPlanDetail::getTimestamp)
+            );
+            if (energyDetails.isEmpty()) {
+                throw new BusinessException(400, "能源方案没有明细，无法生成协同评估结果");
+            }
 
-        int horizon = Math.min(scheduleDetails.size(), energyDetails.size());
-        List<ConstraintConflict> conflicts = new ArrayList<>();
-        for (int index = 0; index < horizon; index++) {
-            ProductionScheduleDetail scheduleDetail = scheduleDetails.get(index);
-            EnergyPlanDetail energyDetail = energyDetails.get(index);
-            JointOptimizationTimeseries point = new JointOptimizationTimeseries();
-            point.setOptimizeId(plan.getId());
-            point.setTimestamp(scheduleDetail.getStartTime() != null ? scheduleDetail.getStartTime() : energyDetail.getTimestamp());
-            point.setPlannedOutput(scheduleDetail.getProduction());
-            point.setElectricityConsumption(energyDetail.getElectricityConsumption());
-            point.setSteamConsumption(energyDetail.getSteamConsumption());
-            point.setCarbonEmissionTco2(energyDetail.getCarbonEmissionTco2());
-            point.setEnergyCost(energyDetail.getEnergyCost());
-            timeseriesMapper.insert(point);
-            addConflictIfNeeded(conflicts, plan.getId(), scheduleDetail, energyDetail);
-        }
-        for (ConstraintConflict conflict : conflicts) {
-            conflictMapper.insert(conflict);
-        }
+            plan.setTaskId(task.getId());
+            plan.setScheduleId(schedulePlan.getId());
+            plan.setEnergyPlanId(energyPlan.getId());
+            plan.setStatus(TaskStatus.RUNNING);
+            plan.setRecommended(1);
+            BigDecimal optimizedEnergy = value(schedulePlan.getTotalEnergy());
+            if (optimizedEnergy.compareTo(BigDecimal.ZERO) == 0) {
+                optimizedEnergy = sum(scheduleDetails.stream().map(ProductionScheduleDetail::getElecForecast).toList());
+            }
+            BigDecimal baselineEnergy = baselineEnergy(schedulePlan, scheduleDetails);
+            BigDecimal energyReductionRate = percent(baselineEnergy.subtract(optimizedEnergy), baselineEnergy);
+            BigDecimal baselineCost = baselineCost(scheduleDetails, schedulePlan);
+            BigDecimal optimizedCost = value(energyPlan.getTotalEnergyCost());
+            BigDecimal costReductionRate = optimizedCost.compareTo(BigDecimal.ZERO) > 0
+                    ? percent(baselineCost.subtract(optimizedCost), baselineCost)
+                    : energyReductionRate;
+            BigDecimal mape = calculateMape(scheduleDetails, energyDetails);
+            BigDecimal er = calculateEr(energyDetails, dto.getObjectiveWeights());
+            plan.setCostReductionRate(scale(nonNegative(costReductionRate), 2));
+            plan.setEnergyReductionRate(scale(nonNegative(energyReductionRate), 2));
+            plan.setExecuteRate(er);
+            plan.setMape(mape);
+            plan.setEc(schedulePlan.getEcOptimized() != null ? schedulePlan.getEcOptimized() : schedulePlan.getElecCoefficient());
+            plan.setEr(er);
+            optimizePlanMapper.insert(plan);
 
-        task.setStatus(TaskStatus.SUCCESS);
-        task.setProgress(100);
-        task.setMessage("协同优化评价已生成");
-        task.setResultId(plan.getId());
-        task.setFinishTime(LocalDateTime.now());
-        algorithmTaskMapper.updateById(task);
+            int horizon = Math.min(scheduleDetails.size(), energyDetails.size());
+            List<ConstraintConflict> conflicts = new ArrayList<>();
+            for (int index = 0; index < horizon; index++) {
+                ProductionScheduleDetail scheduleDetail = scheduleDetails.get(index);
+                EnergyPlanDetail energyDetail = energyDetails.get(index);
+                JointOptimizationTimeseries point = new JointOptimizationTimeseries();
+                point.setOptimizeId(plan.getId());
+                point.setTimestamp(scheduleDetail.getStartTime() != null ? scheduleDetail.getStartTime() : energyDetail.getTimestamp());
+                point.setPlannedOutput(scheduleDetail.getProduction());
+                point.setElectricityConsumption(energyDetail.getElectricityConsumption());
+                point.setSteamConsumption(energyDetail.getSteamConsumption());
+                point.setCarbonEmissionTco2(energyDetail.getCarbonEmissionTco2());
+                point.setEnergyCost(energyDetail.getEnergyCost());
+                timeseriesMapper.insert(point);
+                addConflictIfNeeded(conflicts, plan.getId(), scheduleDetail, energyDetail);
+            }
+            for (ConstraintConflict conflict : conflicts) {
+                conflictMapper.insert(conflict);
+            }
 
-        TaskVO vo = TaskVO.builder()
-                .taskId(task.getId())
-                .taskType(task.getTaskType())
-                .status(task.getStatus())
-                .progress(task.getProgress())
-                .message(task.getMessage())
-                .resultId(task.getResultId())
-                .errorMessage(task.getErrorMessage())
-                .createTime(task.getStartTime())
-                .updateTime(task.getFinishTime())
-                .build();
-        return Result.ok("协同优化任务已创建", vo);
+            plan.setStatus(TaskStatus.SUCCESS);
+            optimizePlanMapper.updateById(plan);
+            markTaskSuccess(task, plan.getId(), "协同评估、约束校验和效果分析已生成");
+            return plan;
+        } catch (RuntimeException e) {
+            if (plan.getId() != null) {
+                plan.setStatus(TaskStatus.FAILED);
+                optimizePlanMapper.updateById(plan);
+            }
+            markTaskFailed(task, e);
+            throw e;
+        }
     }
 
     private BigDecimal baselineEnergy(ProductionSchedulePlan schedulePlan, List<ProductionScheduleDetail> details) {
@@ -297,7 +330,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
     public Result<JointOptimizeVO> getResult(Long optimizeId) {
         JointOptimizationPlan plan = optimizePlanMapper.selectById(optimizeId);
         if (plan == null) {
-            throw new BusinessException(404, "协同优化方案不存在");
+            throw new BusinessException(404, "协同评估结果不存在");
         }
 
         // 查询时序明细
@@ -336,7 +369,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         JointOptimizeVO vo = JointOptimizeVO.builder()
                 .id(plan.getId())
                 .optimizeId(plan.getId())
-                .name("生产-能源协同优化方案-" + plan.getId())
+                .name("生产计划与能源运行方案协同评估结果-" + plan.getId())
                 .taskId(plan.getTaskId())
                 .scheduleId(plan.getScheduleId())
                 .energyPlanId(plan.getEnergyPlanId())
@@ -392,7 +425,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
                             .last("LIMIT 1")
             );
             if (plan == null) {
-                throw new BusinessException(404, "该任务暂无协同优化结果");
+                throw new BusinessException(404, "该任务暂无协同评估结果");
             }
             targetOptimizeId = plan.getId();
         }
@@ -413,7 +446,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
     public Result<JointOptimizeEvaluationVO> getEvaluation(Long optimizeId) {
         JointOptimizationPlan plan = optimizePlanMapper.selectById(optimizeId);
         if (plan == null) {
-            throw new BusinessException(404, "协同优化方案不存在");
+            throw new BusinessException(404, "协同评估结果不存在");
         }
         return Result.ok(toEvaluationVO(plan));
     }
@@ -421,20 +454,20 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
     @Override
     public Result<JointOptimizeCompareVO> compare(JointOptimizeCompareDTO dto) {
         if (dto == null || dto.getOptimizeIds() == null || dto.getOptimizeIds().isEmpty()) {
-            throw new BusinessException(400, "协同优化方案 ID 列表不能为空");
+            throw new BusinessException(400, "协同评估结果 ID 列表不能为空");
         }
         Set<Long> orderedIds = dto.getOptimizeIds().stream()
                 .filter(id -> id != null)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         if (orderedIds.isEmpty()) {
-            throw new BusinessException(400, "协同优化方案 ID 列表不能为空");
+            throw new BusinessException(400, "协同评估结果 ID 列表不能为空");
         }
 
         List<JointOptimizationPlan> plans = new ArrayList<>();
         for (Long id : orderedIds) {
             JointOptimizationPlan plan = optimizePlanMapper.selectById(id);
             if (plan == null) {
-                throw new BusinessException(404, "协同优化方案不存在: " + id);
+                throw new BusinessException(404, "协同评估结果不存在: " + id);
             }
             plans.add(plan);
         }
@@ -443,7 +476,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         List<JointOptimizeCompareItemVO> records = plans.stream().map(plan ->
                 JointOptimizeCompareItemVO.builder()
                         .optimizeId(plan.getId())
-                        .name("生产-能源协同优化方案-" + plan.getId())
+                        .name("生产计划与能源运行方案协同评估结果-" + plan.getId())
                         .baseline(plan.getId().equals(baseline.getId()))
                         .recommended(plan.getRecommended() != null && plan.getRecommended() == 1)
                         .costReductionRate(plan.getCostReductionRate())
@@ -489,7 +522,7 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
         List<JointParetoPointVO> points = plans.stream()
                 .map(plan -> JointParetoPointVO.builder()
                         .optimizeId(plan.getId())
-                        .name("生产-能源协同优化方案-" + plan.getId())
+                        .name("生产计划与能源运行方案协同评估结果-" + plan.getId())
                         .costReductionRate(plan.getCostReductionRate())
                         .energyReductionRate(plan.getEnergyReductionRate())
                         .mape(plan.getMape())
@@ -660,6 +693,40 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
             return BigDecimal.ZERO;
         }
         return sum(values).divide(new BigDecimal(values.size()), 4, RoundingMode.HALF_UP);
+    }
+
+    private void runAlgorithmTask(Runnable runnable) {
+        if (algorithmTaskExecutor == null) {
+            runnable.run();
+            return;
+        }
+        algorithmTaskExecutor.execute(runnable);
+    }
+
+    private void markTaskRunning(AlgorithmTask task, String message) {
+        task.setStatus(TaskStatus.RUNNING);
+        task.setProgress(10);
+        task.setMessage(message);
+        task.setStartTime(task.getStartTime() != null ? task.getStartTime() : LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
+    }
+
+    private void markTaskSuccess(AlgorithmTask task, Long resultId, String message) {
+        task.setStatus(TaskStatus.SUCCESS);
+        task.setProgress(100);
+        task.setMessage(message);
+        task.setResultId(resultId);
+        task.setFinishTime(LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
+    }
+
+    private void markTaskFailed(AlgorithmTask task, RuntimeException e) {
+        task.setStatus(TaskStatus.FAILED);
+        task.setProgress(100);
+        task.setMessage("任务执行失败");
+        task.setErrorMessage(e.getMessage());
+        task.setFinishTime(LocalDateTime.now());
+        algorithmTaskMapper.updateById(task);
     }
 
     private TaskVO toTaskVO(AlgorithmTask task) {
