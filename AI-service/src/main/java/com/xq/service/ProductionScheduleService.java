@@ -15,6 +15,8 @@ public interface ProductionScheduleService {
 
     Result<TaskVO> generate(ScheduleGenerateDTO dto);
 
+    Result<TaskVO> generateFromRawData(byte[] fileBytes, String originalFilename);
+
     Result<SchedulePlanVO> getPlanDetail(Long scheduleId);
 
     Result<SchedulePlanVO> getPlanByDate(String scheduleDate);

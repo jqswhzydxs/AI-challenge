@@ -17,7 +17,9 @@ import com.xq.model.vo.ScheduleCompareItemVO;
 import com.xq.model.vo.ScheduleCompareVO;
 import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionScheduleService;
+import com.xq.service.RealtimeControlService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +35,10 @@ import com.alibaba.fastjson2.JSON;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -43,6 +49,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
@@ -68,6 +75,19 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final ProductionLineMapper productionLineMapper;
     private TaskExecutor algorithmTaskExecutor;
     private PlanAutoGenerationService planAutoGenerationService;
+    private RealtimeControlService realtimeControlService;
+
+    @Value("${algorithm.matlab-command:matlab}")
+    private String matlabCommand;
+
+    @Value("${algorithm.working-dir:../算法组文件}")
+    private String algorithmWorkingDir;
+
+    @Value("${algorithm.task-dir:target/algorithm-tasks}")
+    private String algorithmTaskDir;
+
+    @Value("${algorithm.timeout-seconds:180}")
+    private long algorithmTimeoutSeconds;
 
     @Autowired(required = false)
     public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
@@ -77,6 +97,11 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Autowired(required = false)
     public void setPlanAutoGenerationService(PlanAutoGenerationService planAutoGenerationService) {
         this.planAutoGenerationService = planAutoGenerationService;
+    }
+
+    @Autowired(required = false)
+    public void setRealtimeControlService(RealtimeControlService realtimeControlService) {
+        this.realtimeControlService = realtimeControlService;
     }
 
     @Override
@@ -104,6 +129,39 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         runAlgorithmTask(() -> generateScheduleResult(task, dto, scheduleDate, planHorizon, planStart));
 
         return Result.ok("排产任务已创建", toTaskVO(task));
+    }
+
+    @Override
+    public Result<TaskVO> generateFromRawData(byte[] fileBytes, String originalFilename) {
+        if (fileBytes == null || fileBytes.length == 0) {
+            throw new BusinessException(400, "上传文件不能为空");
+        }
+        String safeName = sanitizeFilename(originalFilename);
+        if (!safeName.toLowerCase().endsWith(".csv")) {
+            throw new BusinessException(400, "当前算法仅支持 CSV 原始数据文件");
+        }
+        validateRawCsv(fileBytes);
+
+        AlgorithmTask task = new AlgorithmTask();
+        task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
+        task.setStatus(TaskStatus.PENDING);
+        task.setProgress(0);
+        task.setMessage("原始数据已上传，等待调用算法");
+        task.setRetryCount(0);
+        task.setAlgorithmName("MATLAB_MILP_MPC");
+        task.setAlgorithmVersion("v1.0");
+        task.setResultFileName("output.json");
+        task.setTrainingRecordCount(null);
+        task.setFrontendRequestJson(JSON.toJSONString(Map.of(
+                "sourceFileName", safeName,
+                "fileSize", fileBytes.length
+        )));
+        task.setStartTime(LocalDateTime.now());
+        algorithmTaskMapper.insert(task);
+
+        runAlgorithmTask(() -> runMatlabScheduleTask(task, fileBytes, safeName));
+
+        return Result.ok("原始数据已上传，算法任务已创建", toTaskVO(task));
     }
 
     private void generateScheduleResult(AlgorithmTask task,
@@ -154,6 +212,95 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             }
             markTaskFailed(task, e);
             throw e;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void runMatlabScheduleTask(AlgorithmTask task, byte[] fileBytes, String sourceFileName) {
+        markTaskRunning(task, "原始数据校验通过，正在准备算法工作目录");
+        try {
+            Path algorithmDir = Paths.get(algorithmWorkingDir).toAbsolutePath().normalize();
+            Path mainFile = algorithmDir.resolve("main.m");
+            if (!Files.exists(mainFile)) {
+                throw new BusinessException(500, "未找到算法主程序 main.m: " + mainFile);
+            }
+
+            Path taskRoot = Paths.get(algorithmTaskDir).toAbsolutePath().normalize();
+            Path taskDir = taskRoot.resolve(String.valueOf(task.getId())).normalize();
+            Files.createDirectories(taskDir);
+
+            Path inputFile = taskDir.resolve("input.csv");
+            Path outputFile = taskDir.resolve("output.json");
+            Path logFile = taskDir.resolve("matlab.log");
+            Files.write(inputFile, fileBytes);
+
+            task.setProgress(20);
+            task.setMessage("正在调用 MATLAB 算法生成方案");
+            task.setAlgorithmRequestJson(JSON.toJSONString(Map.of(
+                    "algorithmDir", algorithmDir.toString(),
+                    "taskDir", taskDir.toString(),
+                    "sourceFileName", sourceFileName,
+                    "inputFile", inputFile.toString(),
+                    "outputFile", outputFile.toString()
+            )));
+            algorithmTaskMapper.updateById(task);
+
+            String matlabScript = "addpath('" + escapeMatlabPath(algorithmDir) + "'); main('input.csv','output.json')";
+            ProcessBuilder processBuilder = new ProcessBuilder(matlabCommand, "-batch", matlabScript);
+            processBuilder.directory(taskDir.toFile());
+            processBuilder.redirectErrorStream(true);
+            processBuilder.redirectOutput(logFile.toFile());
+
+            Process process = processBuilder.start();
+            boolean finished = process.waitFor(algorithmTimeoutSeconds, TimeUnit.SECONDS);
+            String console = Files.exists(logFile) ? Files.readString(logFile, StandardCharsets.UTF_8) : "";
+            if (!finished) {
+                process.destroyForcibly();
+                throw new BusinessException(500, "算法执行超时，超过 " + algorithmTimeoutSeconds + " 秒");
+            }
+            if (process.exitValue() != 0) {
+                throw new BusinessException(500, "MATLAB 算法执行失败: " + trimMessage(console));
+            }
+            if (!Files.exists(outputFile)) {
+                throw new BusinessException(500, "算法执行完成但未生成 output.json");
+            }
+
+            task.setProgress(70);
+            task.setMessage("算法执行完成，正在解析并入库");
+            algorithmTaskMapper.updateById(task);
+
+            String outputJson = Files.readString(outputFile, StandardCharsets.UTF_8);
+            Map<String, Object> root = JSON.parseObject(outputJson, Map.class);
+            if ("error".equalsIgnoreCase(String.valueOf(root.get("status")))) {
+                int code = root.get("code") instanceof Number ? ((Number) root.get("code")).intValue() : 500;
+                String message = root.get("message") != null ? root.get("message").toString() : "算法执行失败";
+                throw new BusinessException(code, "算法返回错误: " + message);
+            }
+            Object dailyPlanObject = root.get("daily_plan");
+            Map<String, Object> dailyPlan = dailyPlanObject instanceof Map<?, ?>
+                    ? (Map<String, Object>) dailyPlanObject
+                    : root;
+
+            Result<ImportPlanResultVO> importResult = importDailyPlan(dailyPlan);
+            ImportPlanResultVO importVO = importResult.getData();
+            Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
+
+            Object realtimeControl = root.get("realtime_control");
+            if (realtimeControl != null && realtimeControlService != null) {
+                realtimeControlService.importRealtimeControl(realtimeControl, extractPlanDate(dailyPlan), "output.json");
+            }
+
+            task.setAlgorithmResponseJson(outputJson);
+            markTaskSuccess(task, scheduleId, "算法方案已生成并入库");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            RuntimeException wrapped = new BusinessException(500, "算法执行被中断");
+            markTaskFailed(task, wrapped);
+        } catch (RuntimeException e) {
+            markTaskFailed(task, e);
+        } catch (Exception e) {
+            RuntimeException wrapped = new BusinessException(500, "算法任务执行失败: " + e.getMessage());
+            markTaskFailed(task, wrapped);
         }
     }
 
@@ -581,6 +728,78 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .createTime(task.getStartTime())
                 .updateTime(task.getFinishTime())
                 .build();
+    }
+
+    private String sanitizeFilename(String originalFilename) {
+        String filename = originalFilename != null ? originalFilename.trim() : "";
+        if (filename.isEmpty()) {
+            filename = "raw_data.csv";
+        }
+        filename = filename.replace('\\', '/');
+        int slashIndex = filename.lastIndexOf('/');
+        if (slashIndex >= 0) {
+            filename = filename.substring(slashIndex + 1);
+        }
+        filename = filename.replaceAll("[^A-Za-z0-9._-]", "_");
+        return filename.isEmpty() ? "raw_data.csv" : filename;
+    }
+
+    private void validateRawCsv(byte[] fileBytes) {
+        String content = new String(fileBytes, StandardCharsets.UTF_8);
+        String[] lines = content.split("\\R");
+        String header = null;
+        int dataRows = 0;
+        for (String line : lines) {
+            if (line == null || line.trim().isEmpty()) {
+                continue;
+            }
+            if (header == null) {
+                header = line.trim();
+            } else {
+                dataRows++;
+            }
+        }
+        if (header == null) {
+            throw new BusinessException(400, "CSV 文件为空");
+        }
+        String normalizedHeader = header.toLowerCase();
+        boolean hasTimestamp = normalizedHeader.contains("timestamp")
+                || normalizedHeader.contains("date")
+                || normalizedHeader.contains("datetime");
+        boolean hasElec = normalizedHeader.contains("elec")
+                || normalizedHeader.contains("usage_kwh")
+                || normalizedHeader.contains("power");
+        if (!hasTimestamp || !hasElec) {
+            throw new BusinessException(415, "输入格式错误，请确保 CSV 包含 timestamp/date 和 elec/Usage_kWh 字段");
+        }
+        int requiredRows = 7 * 24 * 4;
+        if (dataRows < requiredRows) {
+            throw new BusinessException(400, "输入数据不足，需要至少7天（672个点）的15分钟数据，当前有效数据行数: " + dataRows);
+        }
+    }
+
+    private String escapeMatlabPath(Path path) {
+        return path.toString().replace("\\", "/").replace("'", "''");
+    }
+
+    private String trimMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "无控制台输出";
+        }
+        String text = message.trim();
+        int maxLength = 1000;
+        if (text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(text.length() - maxLength);
+    }
+
+    private String extractPlanDate(Map<String, Object> dailyPlan) {
+        if (dailyPlan == null || dailyPlan.get("timestamp") == null) {
+            return null;
+        }
+        String timestamp = dailyPlan.get("timestamp").toString().trim();
+        return timestamp.length() >= 10 ? timestamp.substring(0, 10) : null;
     }
 
     private BigDecimal getDecimal(Map<String, Object> source, String key, BigDecimal defaultValue) {

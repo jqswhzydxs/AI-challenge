@@ -18,8 +18,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springdoc.core.annotations.ParameterObject;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.Map;
 
 /**
@@ -54,6 +57,14 @@ public class ProductionController {
     @PostMapping("/schedule/generate")
     public Result<TaskVO> generateSchedule(@Valid @RequestBody ScheduleGenerateDTO dto) {
         return scheduleService.generate(dto);
+    }
+
+    @Operation(summary = "上传原始数据并生成排产方案", description = "上传钢铁能源 CSV 原始数据，后端异步调用 MATLAB 算法生成排产方案和 MPC 调控结果")
+    @PostMapping(value = "/schedules/generate-from-raw-data", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<TaskVO> generateScheduleFromRawData(
+            @Parameter(description = "原始能源 CSV 文件，至少包含 timestamp/elec 字段", required = true)
+            @RequestPart("file") MultipartFile file) throws IOException {
+        return scheduleService.generateFromRawData(file.getBytes(), file.getOriginalFilename());
     }
 
     @Operation(summary = "查询排产方案详情", description = "根据方案 ID 查询排产方案的完整结果")
