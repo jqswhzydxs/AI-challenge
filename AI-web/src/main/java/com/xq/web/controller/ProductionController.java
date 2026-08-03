@@ -5,6 +5,7 @@ import com.xq.common.result.Result;
 import com.xq.model.dto.PageQueryDTO;
 import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
+import com.xq.model.vo.ImportOrderResultVO;
 import com.xq.model.vo.ImportPlanResultVO;
 import com.xq.model.vo.ProductionOrderVO;
 import com.xq.model.vo.ScheduleCompareVO;
@@ -51,6 +52,14 @@ public class ProductionController {
     @GetMapping("/orders")
     public Result<PageResult<ProductionOrderVO>> listOrders(@ParameterObject PageQueryDTO query) {
         return orderService.listOrders(query);
+    }
+
+    @Operation(summary = "上传生产订单 CSV", description = "上传订单/生产需求 CSV，写入 production_order 表。当前用于订单展示和后续 D_total 汇总，不代表已启用订单级 APS 排产")
+    @PostMapping(value = "/orders/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<ImportOrderResultVO> importOrders(
+            @Parameter(description = "订单 CSV 文件，字段包含 orderNo/productName/plannedQuantity/dueTime 等", required = true)
+            @RequestPart("file") MultipartFile file) throws IOException {
+        return orderService.importOrders(file.getBytes(), file.getOriginalFilename());
     }
 
     @Operation(summary = "生成排产方案", description = "根据排产参数发起异步排产任务，返回任务 ID 供后续查询")

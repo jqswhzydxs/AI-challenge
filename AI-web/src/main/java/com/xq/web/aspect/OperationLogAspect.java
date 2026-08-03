@@ -23,6 +23,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Slf4j
@@ -145,12 +146,12 @@ public class OperationLogAspect {
 
     private Object safeArg(Object arg) {
         if (arg instanceof MultipartFile file) {
-            return Map.of(
-                    "fieldName", file.getName(),
-                    "originalFilename", file.getOriginalFilename(),
-                    "contentType", file.getContentType(),
-                    "size", file.getSize()
-            );
+            Map<String, Object> fileInfo = new LinkedHashMap<>();
+            fileInfo.put("fieldName", file.getName());
+            fileInfo.put("originalFilename", file.getOriginalFilename());
+            fileInfo.put("contentType", file.getContentType());
+            fileInfo.put("size", file.getSize());
+            return fileInfo;
         }
         if (arg instanceof MultipartFile[] files) {
             return Arrays.stream(files).map(this::safeArg).toArray();

@@ -1,0 +1,4 @@
+orderNo,productName,productSpec,plannedQuantity,unit,dueTime,priority,status,remark
+PO-20260803-001,Hot rolled coil,Q235B 3.0mm,2.8,t,2026-08-03 12:00:00,1,PENDING,import sample
+PO-20260803-002,Hot rolled coil,Q345B 4.0mm,3.2,t,2026-08-03 18:00:00,2,PENDING,import sample
+PO-20260803-003,Steel plate,Q235B 8.0mm,3.5,t,2026-08-03 23:59:59,3,PENDING,import sample
