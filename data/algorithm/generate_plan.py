@@ -364,7 +364,9 @@ def optimize_process_parameters(total_production: float) -> tuple[int, float, fl
     return best[0], best[1], best[2], best[3]
 
 
-def generate_realtime_control(points: Sequence[EnergyPoint], production: Sequence[float]) -> dict:
+def generate_realtime_control(points: Sequence[EnergyPoint],
+                              production: Sequence[float],
+                              control_date: datetime) -> dict:
     sim_data = list(points[-min(24 * 60, len(points)) :])
     elec_ref_by_hour = [value * BASE_ELEC_COEFF for value in production]
     elec_ref_minutely: List[float] = []
@@ -416,8 +418,14 @@ def generate_realtime_control(points: Sequence[EnergyPoint], production: Sequenc
             executable += 1
     er = executable / len(boiler_values) * 100
 
+    control_timestamp = datetime.combine(
+        control_date.date(),
+        sim_data[n_steps - 1].timestamp.time(),
+    )
+
     return {
-        "timestamp": sim_data[n_steps - 1].timestamp.strftime("%H:%M:%S"),
+        "timestamp": control_timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "control_date": control_timestamp.strftime("%Y-%m-%d"),
         "control": {
             "boiler_load": boiler_values[-1],
             "turbine_output": turbine_values[-1],
@@ -455,8 +463,9 @@ def build_result(input_file: Path) -> dict:
     print(f"heat furnace running hours: {sum(heat_state)}")
     print(f"EC reduction: {reduction_rate:.2f}%")
 
+    generated_at = datetime.now()
     daily_plan = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": generated_at.strftime("%Y-%m-%d %H:%M:%S"),
         "plan_horizon": 24,
         "unit": "hour",
         "data_granularity": granularity,
@@ -480,7 +489,7 @@ def build_result(input_file: Path) -> dict:
             for hour in range(24)
         ],
     }
-    realtime_control = generate_realtime_control(points, production)
+    realtime_control = generate_realtime_control(points, production, generated_at)
     print(f"ER: {realtime_control['performance']['ER']:.2f}%")
 
     return {

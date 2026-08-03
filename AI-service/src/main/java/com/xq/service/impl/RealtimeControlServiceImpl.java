@@ -235,15 +235,16 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
 
     private LocalDate parseControlDate(String controlDate, String timestamp) {
         String value = controlDate;
-        if ((value == null || value.trim().isEmpty()) && timestamp != null && timestamp.trim().length() >= 10) {
-            value = timestamp.trim().substring(0, 10);
+        String timestampText = timestamp != null ? timestamp.trim() : "";
+        if ((value == null || value.trim().isEmpty()) && timestampText.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
+            value = timestampText.substring(0, 10);
         }
         if (value == null || value.trim().isEmpty()) {
             return null;
         }
         try {
             String text = value.trim();
-            if (text.length() > 10) {
+            if (text.matches("\\d{4}-\\d{2}-\\d{2}.*") && text.length() > 10) {
                 text = text.substring(0, 10);
             }
             return LocalDate.parse(text);
@@ -253,8 +254,8 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
     }
 
     private String parseControlTime(String rawTimestamp) {
-        String value = rawTimestamp;
-        if (value.length() >= 19) {
+        String value = rawTimestamp != null ? rawTimestamp.trim() : "";
+        if (value.matches("\\d{4}-\\d{2}-\\d{2}[ T].*") && value.length() >= 19) {
             value = value.substring(11, 19);
         }
         try {

@@ -227,6 +227,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @SuppressWarnings("unchecked")
     private void runExternalScheduleTask(AlgorithmTask task, byte[] fileBytes, String sourceFileName) {
         markTaskRunning(task, "原始数据校验通过，正在准备算法工作目录");
+        String phase = "准备算法工作目录";
         try {
             Path algorithmDir = Paths.get(algorithmWorkingDir).toAbsolutePath().normalize();
             Path scriptFile = resolveAlgorithmScript(algorithmDir);
@@ -243,6 +244,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             Path logFile = taskDir.resolve("algorithm.log");
             Files.write(inputFile, fileBytes);
 
+            phase = "调用算法程序";
             task.setProgress(20);
             task.setMessage("正在调用 " + algorithmRuntime + " 算法生成方案");
             task.setAlgorithmRequestJson(JSON.toJSONString(Map.of(
@@ -264,7 +266,8 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
 
             Process process = processBuilder.start();
             boolean finished = process.waitFor(algorithmTimeoutSeconds, TimeUnit.SECONDS);
-            String console = Files.exists(logFile) ? Files.readString(logFile, StandardCharsets.UTF_8) : "";
+            phase = "读取算法日志";
+            String console = readTextLeniently(logFile);
             if (!finished) {
                 process.destroyForcibly();
                 throw new BusinessException(500, "算法执行超时，超过 " + algorithmTimeoutSeconds + " 秒");
@@ -276,6 +279,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 throw new BusinessException(500, "算法执行完成但未生成 output.json");
             }
 
+            phase = "解析算法输出";
             task.setProgress(70);
             task.setMessage("算法执行完成，正在解析并入库");
             algorithmTaskMapper.updateById(task);
@@ -292,25 +296,34 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                     ? (Map<String, Object>) dailyPlanObject
                     : root;
 
+            phase = "导入排产方案";
             Result<ImportPlanResultVO> importResult = importDailyPlan(dailyPlan);
             ImportPlanResultVO importVO = importResult.getData();
             Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
 
+            String realtimeImportWarning = null;
             Object realtimeControl = root.get("realtime_control");
             if (realtimeControl != null && realtimeControlService != null) {
-                realtimeControlService.importRealtimeControl(realtimeControl, extractPlanDate(dailyPlan), "output.json");
+                phase = "导入实时调控结果";
+                try {
+                    realtimeControlService.importRealtimeControl(realtimeControl, extractPlanDate(dailyPlan), "output.json");
+                } catch (RuntimeException realtimeException) {
+                    realtimeImportWarning = trimMessage(realtimeException.getMessage());
+                }
             }
 
             task.setAlgorithmResponseJson(outputJson);
-            markTaskSuccess(task, scheduleId, "算法方案已生成并入库");
+            markTaskSuccess(task, scheduleId, realtimeImportWarning == null
+                    ? "算法方案已生成并入库"
+                    : "排产方案已生成并入库；实时调控结果入库失败: " + realtimeImportWarning);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            RuntimeException wrapped = new BusinessException(500, "算法执行被中断");
+            RuntimeException wrapped = new BusinessException(500, "算法执行被中断，阶段: " + phase);
             markTaskFailed(task, wrapped);
         } catch (RuntimeException e) {
-            markTaskFailed(task, e);
+            markTaskFailed(task, withPhase(phase, e));
         } catch (Exception e) {
-            RuntimeException wrapped = new BusinessException(500, "算法任务执行失败: " + e.getMessage());
+            RuntimeException wrapped = new BusinessException(500, "算法任务执行失败，阶段: " + phase + "，原因: " + e.getMessage());
             markTaskFailed(task, wrapped);
         }
     }
@@ -815,6 +828,26 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 inputFile.toString(),
                 outputFile.toString()
         );
+    }
+
+    private RuntimeException withPhase(String phase, RuntimeException e) {
+        String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        if (message.contains("阶段:")) {
+            return e;
+        }
+        int code = e instanceof BusinessException businessException ? businessException.getCode() : 500;
+        return new BusinessException(code, "算法任务执行失败，阶段: " + phase + "，原因: " + message);
+    }
+
+    private String readTextLeniently(Path path) {
+        if (!Files.exists(path)) {
+            return "";
+        }
+        try {
+            return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "日志读取失败: " + e.getMessage();
+        }
     }
 
     private String escapeMatlabPath(Path path) {

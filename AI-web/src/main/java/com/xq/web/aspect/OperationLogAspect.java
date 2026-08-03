@@ -19,9 +19,11 @@ import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Map;
 
 @Slf4j
 @Aspect
@@ -136,8 +138,24 @@ public class OperationLogAspect {
         Object[] args = Arrays.stream(joinPoint.getArgs())
                 .filter(arg -> !(arg instanceof ServletRequest))
                 .filter(arg -> !(arg instanceof ServletResponse))
+                .map(this::safeArg)
                 .toArray();
         return limit(JSON.toJSONString(args), MAX_PARAM_LENGTH);
+    }
+
+    private Object safeArg(Object arg) {
+        if (arg instanceof MultipartFile file) {
+            return Map.of(
+                    "fieldName", file.getName(),
+                    "originalFilename", file.getOriginalFilename(),
+                    "contentType", file.getContentType(),
+                    "size", file.getSize()
+            );
+        }
+        if (arg instanceof MultipartFile[] files) {
+            return Arrays.stream(files).map(this::safeArg).toArray();
+        }
+        return arg;
     }
 
     private String limit(String value, int maxLength) {
