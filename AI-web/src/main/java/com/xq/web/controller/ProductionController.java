@@ -59,7 +59,7 @@ public class ProductionController {
         return scheduleService.generate(dto);
     }
 
-    @Operation(summary = "上传原始数据并生成排产方案", description = "上传钢铁能源 CSV 原始数据，后端异步调用 MATLAB 算法生成排产方案和 MPC 调控结果")
+    @Operation(summary = "上传原始数据并生成排产方案", description = "上传钢铁能源 CSV 原始数据，后端异步调用 Python 算法生成排产方案和 MPC 调控结果；必要时可通过配置切回 MATLAB 旧版")
     @PostMapping(value = "/schedules/generate-from-raw-data", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<TaskVO> generateScheduleFromRawData(
             @Parameter(description = "原始能源 CSV 文件，至少包含 timestamp/elec 字段", required = true)

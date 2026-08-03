@@ -77,6 +77,15 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private PlanAutoGenerationService planAutoGenerationService;
     private RealtimeControlService realtimeControlService;
 
+    @Value("${algorithm.runtime:python}")
+    private String algorithmRuntime;
+
+    @Value("${algorithm.command:python}")
+    private String algorithmCommand;
+
+    @Value("${algorithm.script:generate_plan.py}")
+    private String algorithmScript;
+
     @Value("${algorithm.matlab-command:matlab}")
     private String matlabCommand;
 
@@ -148,8 +157,8 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         task.setProgress(0);
         task.setMessage("原始数据已上传，等待调用算法");
         task.setRetryCount(0);
-        task.setAlgorithmName("MATLAB_MILP_MPC");
-        task.setAlgorithmVersion("v1.0");
+        task.setAlgorithmName(isMatlabRuntime() ? "MATLAB_MILP_MPC" : "PYTHON_MILP_MPC");
+        task.setAlgorithmVersion(isMatlabRuntime() ? "v1.1" : "v1.0");
         task.setResultFileName("output.json");
         task.setTrainingRecordCount(null);
         task.setFrontendRequestJson(JSON.toJSONString(Map.of(
@@ -159,7 +168,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
-        runAlgorithmTask(() -> runMatlabScheduleTask(task, fileBytes, safeName));
+        runAlgorithmTask(() -> runExternalScheduleTask(task, fileBytes, safeName));
 
         return Result.ok("原始数据已上传，算法任务已创建", toTaskVO(task));
     }
@@ -216,13 +225,13 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     }
 
     @SuppressWarnings("unchecked")
-    private void runMatlabScheduleTask(AlgorithmTask task, byte[] fileBytes, String sourceFileName) {
+    private void runExternalScheduleTask(AlgorithmTask task, byte[] fileBytes, String sourceFileName) {
         markTaskRunning(task, "原始数据校验通过，正在准备算法工作目录");
         try {
             Path algorithmDir = Paths.get(algorithmWorkingDir).toAbsolutePath().normalize();
-            Path mainFile = algorithmDir.resolve("main.m");
-            if (!Files.exists(mainFile)) {
-                throw new BusinessException(500, "未找到算法主程序 main.m: " + mainFile);
+            Path scriptFile = resolveAlgorithmScript(algorithmDir);
+            if (!Files.exists(scriptFile)) {
+                throw new BusinessException(500, "未找到算法主程序: " + scriptFile);
             }
 
             Path taskRoot = Paths.get(algorithmTaskDir).toAbsolutePath().normalize();
@@ -231,13 +240,16 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
 
             Path inputFile = taskDir.resolve("input.csv");
             Path outputFile = taskDir.resolve("output.json");
-            Path logFile = taskDir.resolve("matlab.log");
+            Path logFile = taskDir.resolve("algorithm.log");
             Files.write(inputFile, fileBytes);
 
             task.setProgress(20);
-            task.setMessage("正在调用 MATLAB 算法生成方案");
+            task.setMessage("正在调用 " + algorithmRuntime + " 算法生成方案");
             task.setAlgorithmRequestJson(JSON.toJSONString(Map.of(
+                    "runtime", algorithmRuntime,
+                    "command", isMatlabRuntime() ? matlabCommand : algorithmCommand,
                     "algorithmDir", algorithmDir.toString(),
+                    "scriptFile", scriptFile.toString(),
                     "taskDir", taskDir.toString(),
                     "sourceFileName", sourceFileName,
                     "inputFile", inputFile.toString(),
@@ -245,8 +257,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             )));
             algorithmTaskMapper.updateById(task);
 
-            String matlabScript = "addpath('" + escapeMatlabPath(algorithmDir) + "'); main('input.csv','output.json')";
-            ProcessBuilder processBuilder = new ProcessBuilder(matlabCommand, "-batch", matlabScript);
+            ProcessBuilder processBuilder = buildAlgorithmProcessBuilder(algorithmDir, scriptFile, inputFile, outputFile);
             processBuilder.directory(taskDir.toFile());
             processBuilder.redirectErrorStream(true);
             processBuilder.redirectOutput(logFile.toFile());
@@ -259,7 +270,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 throw new BusinessException(500, "算法执行超时，超过 " + algorithmTimeoutSeconds + " 秒");
             }
             if (process.exitValue() != 0) {
-                throw new BusinessException(500, "MATLAB 算法执行失败: " + trimMessage(console));
+                throw new BusinessException(500, algorithmRuntime + " 算法执行失败: " + trimMessage(console));
             }
             if (!Files.exists(outputFile)) {
                 throw new BusinessException(500, "算法执行完成但未生成 output.json");
@@ -776,6 +787,34 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (dataRows < requiredRows) {
             throw new BusinessException(400, "输入数据不足，需要至少7天（672个点）的15分钟数据，当前有效数据行数: " + dataRows);
         }
+    }
+
+    private boolean isMatlabRuntime() {
+        return "matlab".equalsIgnoreCase(algorithmRuntime != null ? algorithmRuntime.trim() : "");
+    }
+
+    private Path resolveAlgorithmScript(Path algorithmDir) {
+        String scriptName = isMatlabRuntime() ? "main.m" : algorithmScript;
+        Path scriptPath = Paths.get(scriptName);
+        return scriptPath.isAbsolute() ? scriptPath.normalize() : algorithmDir.resolve(scriptPath).normalize();
+    }
+
+    private ProcessBuilder buildAlgorithmProcessBuilder(Path algorithmDir,
+                                                        Path scriptFile,
+                                                        Path inputFile,
+                                                        Path outputFile) {
+        if (isMatlabRuntime()) {
+            String matlabScript = "addpath('" + escapeMatlabPath(algorithmDir) + "'); main('"
+                    + escapeMatlabPath(inputFile) + "','"
+                    + escapeMatlabPath(outputFile) + "')";
+            return new ProcessBuilder(matlabCommand, "-batch", matlabScript);
+        }
+        return new ProcessBuilder(
+                algorithmCommand,
+                scriptFile.toString(),
+                inputFile.toString(),
+                outputFile.toString()
+        );
     }
 
     private String escapeMatlabPath(Path path) {

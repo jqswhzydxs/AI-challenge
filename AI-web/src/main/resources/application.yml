@@ -46,8 +46,11 @@ logging:
   level:
     com.xq.mapper: debug
 
-# 算法组 MATLAB 工程化交付配置
+# Algorithm integration
 algorithm:
+  runtime: ${ALGORITHM_RUNTIME:python}
+  command: ${ALGORITHM_COMMAND:python}
+  script: ${ALGORITHM_SCRIPT:generate_plan.py}
   matlab-command: ${ALGORITHM_MATLAB_COMMAND:matlab}
   working-dir: ${ALGORITHM_WORKING_DIR:data/algorithm}
   task-dir: ${ALGORITHM_TASK_DIR:target/algorithm-tasks}
