@@ -49,6 +49,6 @@ logging:
 # 算法组 MATLAB 工程化交付配置
 algorithm:
   matlab-command: ${ALGORITHM_MATLAB_COMMAND:matlab}
-  working-dir: ${ALGORITHM_WORKING_DIR:../算法组文件}
+  working-dir: ${ALGORITHM_WORKING_DIR:../算法组数据}
   task-dir: ${ALGORITHM_TASK_DIR:target/algorithm-tasks}
   timeout-seconds: ${ALGORITHM_TIMEOUT_SECONDS:180}
