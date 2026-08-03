@@ -8,11 +8,12 @@ import csv
 import os
 import math
 
-BASE_DIR = "/sessions/admiring-sweet-cray/mnt/挑战杯"
-OUT_DIR = os.path.join(BASE_DIR, "AI-challenge")
+PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(PROJECT_DIR, "data", "algorithm")
+OUT_DIR = os.path.join(PROJECT_DIR, "database", "sql")
 
-STEEL_CSV = os.path.join(BASE_DIR, "算法组数据", "steel_data_cleaned.csv")
-MPC_CSV  = os.path.join(BASE_DIR, "算法组数据", "mpc_results_mean.csv")
+STEEL_CSV = os.path.join(DATA_DIR, "steel_data_cleaned.csv")
+MPC_CSV  = os.path.join(DATA_DIR, "mpc_results_mean.csv")
 
 STEEL_SQL_OUT = os.path.join(OUT_DIR, "seed_steel_data.sql")
 MPC_SQL_OUT   = os.path.join(OUT_DIR, "seed_mpc_control.sql")

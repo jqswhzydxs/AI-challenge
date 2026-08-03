@@ -80,7 +80,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Value("${algorithm.matlab-command:matlab}")
     private String matlabCommand;
 
-    @Value("${algorithm.working-dir:../算法组数据}")
+    @Value("${algorithm.working-dir:data/algorithm}")
     private String algorithmWorkingDir;
 
     @Value("${algorithm.task-dir:target/algorithm-tasks}")
