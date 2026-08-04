@@ -1,6 +1,7 @@
 package com.xq.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.xq.common.constant.UserRole;
 import com.xq.common.exception.BusinessException;
 import com.xq.common.result.Result;
 import com.xq.common.utils.JwtUtils;
@@ -55,9 +56,9 @@ class AuthServiceImplTest {
         dto.setPassword("123456");
         Result<LoginVO> result = service.login(dto);
 
-        assertEquals("ENERGY_MANAGER", result.getData().getRole());
-        assertEquals(List.of("ENERGY_MANAGER"), result.getData().getRoles());
-        assertEquals("ENERGY_MANAGER", JwtUtils.getRole(result.getData().getToken()));
+        assertEquals(UserRole.USER, result.getData().getRole());
+        assertEquals(List.of(UserRole.USER), result.getData().getRoles());
+        assertEquals(UserRole.USER, JwtUtils.getRole(result.getData().getToken()));
     }
 
     @Test
@@ -80,7 +81,7 @@ class AuthServiceImplTest {
         dto.setPassword("123456");
         Result<LoginVO> result = service.login(dto);
 
-        assertEquals("SYSTEM_ADMIN", result.getData().getRole());
+        assertEquals(UserRole.USER, result.getData().getRole());
     }
 
     @Test
@@ -138,7 +139,7 @@ class AuthServiceImplTest {
 
         assertEquals(4L, data.getUserId());
         assertEquals("viewer", data.getUsername());
-        assertEquals("SYSTEM_ADMIN", data.getRole());
-        assertEquals(List.of("SYSTEM_ADMIN"), data.getRoles());
+        assertEquals(UserRole.USER, data.getRole());
+        assertEquals(List.of(UserRole.USER), data.getRoles());
     }
 }

@@ -45,6 +45,19 @@ class AuthInterceptorTest {
         assertTrue(response.getContentAsString().contains("\"code\":403"));
     }
 
+    @Test
+    void allowsAdminToManageUsers() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/system/users");
+        request.addHeader("Authorization", "Bearer " + JwtUtils.createToken(1L, "admin", UserRole.ADMIN));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        boolean allowed = interceptor.preHandle(request, response, new Object());
+
+        assertTrue(allowed);
+        assertEquals(200, response.getStatus());
+        assertEquals(UserRole.ADMIN, request.getAttribute("role"));
+    }
+
     /**
      * 验证角色有权限时请求可以继续进入 Controller，并把用户信息写入 request。
      */
@@ -60,7 +73,7 @@ class AuthInterceptorTest {
         assertEquals(200, response.getStatus());
         assertEquals(3L, request.getAttribute("userId"));
         assertEquals("energy", request.getAttribute("username"));
-        assertEquals(UserRole.ENERGY_MANAGER, request.getAttribute("role"));
+        assertEquals(UserRole.USER, request.getAttribute("role"));
     }
 
     /**

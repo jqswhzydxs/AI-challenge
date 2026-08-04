@@ -114,7 +114,7 @@ public class AuthServiceImpl implements AuthService {
                 .distinct()
                 .toList();
         if (roleIds.isEmpty()) {
-            return List.of(UserRole.SYSTEM_ADMIN);
+            return List.of(UserRole.USER);
         }
 
         List<String> roleCodes = sysRoleMapper.selectBatchIds(roleIds)
@@ -124,6 +124,14 @@ public class AuthServiceImpl implements AuthService {
                 .filter(Objects::nonNull)
                 .distinct()
                 .toList();
-        return roleCodes.isEmpty() ? List.of(UserRole.SYSTEM_ADMIN) : roleCodes;
+        return normalizeRoleCodes(roleCodes);
+    }
+
+    private List<String> normalizeRoleCodes(List<String> roleCodes) {
+        if (roleCodes == null || roleCodes.isEmpty()) {
+            return List.of(UserRole.USER);
+        }
+        boolean admin = roleCodes.stream().anyMatch(UserRole::isAdmin);
+        return List.of(admin ? UserRole.ADMIN : UserRole.USER);
     }
 }

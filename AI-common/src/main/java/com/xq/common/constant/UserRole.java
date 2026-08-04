@@ -1,20 +1,32 @@
 package com.xq.common.constant;
 
 /**
- * 用户角色枚举常量.
- *
- * @author XQ
- * @since 1.0.0
+ * User role constants.
  */
 public final class UserRole {
 
-    /** 系统管理员 */
+    public static final String ADMIN = "ADMIN";
+    public static final String USER = "USER";
+
+    /** Legacy admin role code kept for compatibility with old demo data. */
     public static final String SYSTEM_ADMIN = "SYSTEM_ADMIN";
-    /** 生产调度员 */
+    /** Legacy production role code, now treated as USER. */
     public static final String PRODUCTION_DISPATCHER = "PRODUCTION_DISPATCHER";
-    /** 能源管理员 */
+    /** Legacy energy role code, now treated as USER. */
     public static final String ENERGY_MANAGER = "ENERGY_MANAGER";
 
     private UserRole() {
+    }
+
+    public static boolean isAdmin(String role) {
+        return ADMIN.equals(role) || SYSTEM_ADMIN.equals(role);
+    }
+
+    public static boolean isUser(String role) {
+        return USER.equals(role) || PRODUCTION_DISPATCHER.equals(role) || ENERGY_MANAGER.equals(role);
+    }
+
+    public static String canonicalRole(String role) {
+        return isAdmin(role) ? ADMIN : USER;
     }
 }
