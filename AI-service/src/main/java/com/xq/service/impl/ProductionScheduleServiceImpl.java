@@ -8,11 +8,13 @@ import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
 import com.xq.mapper.EvaluationMetricMapper;
 import com.xq.mapper.ProductionLineMapper;
+import com.xq.mapper.ProductionOrderMapper;
 import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
 import com.xq.model.entity.EvaluationMetric;
 import com.xq.model.entity.ProductionLine;
+import com.xq.model.entity.ProductionOrder;
 import com.xq.model.vo.ScheduleCompareItemVO;
 import com.xq.model.vo.ScheduleCompareVO;
 import com.xq.model.vo.TaskVO;
@@ -45,6 +47,7 @@ import java.time.format.DateTimeParseException;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +76,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
     private final EvaluationMetricMapper evaluationMetricMapper;
     private final ProductionLineMapper productionLineMapper;
+    private final ProductionOrderMapper productionOrderMapper;
     private TaskExecutor algorithmTaskExecutor;
     private PlanAutoGenerationService planAutoGenerationService;
     private RealtimeControlService realtimeControlService;
@@ -141,7 +145,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     }
 
     @Override
-    public Result<TaskVO> generateFromRawData(byte[] fileBytes, String originalFilename) {
+    public Result<TaskVO> generateFromRawData(byte[] fileBytes, String originalFilename, String scheduleDate) {
         if (fileBytes == null || fileBytes.length == 0) {
             throw new BusinessException(400, "上传文件不能为空");
         }
@@ -150,6 +154,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             throw new BusinessException(400, "当前算法仅支持 CSV 原始数据文件");
         }
         validateRawCsv(fileBytes);
+        LocalDate requestedScheduleDate = hasText(scheduleDate) ? parseDate(scheduleDate, "scheduleDate") : null;
 
         AlgorithmTask task = new AlgorithmTask();
         task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
@@ -161,14 +166,17 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         task.setAlgorithmVersion(isMatlabRuntime() ? "v1.1" : "v1.0");
         task.setResultFileName("output.json");
         task.setTrainingRecordCount(null);
-        task.setFrontendRequestJson(JSON.toJSONString(Map.of(
-                "sourceFileName", safeName,
-                "fileSize", fileBytes.length
-        )));
+        Map<String, Object> frontendRequest = new LinkedHashMap<>();
+        frontendRequest.put("sourceFileName", safeName);
+        frontendRequest.put("fileSize", fileBytes.length);
+        if (requestedScheduleDate != null) {
+            frontendRequest.put("scheduleDate", requestedScheduleDate.toString());
+        }
+        task.setFrontendRequestJson(JSON.toJSONString(frontendRequest));
         task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
 
-        runAlgorithmTask(() -> runExternalScheduleTask(task, fileBytes, safeName));
+        runAlgorithmTask(() -> runExternalScheduleTask(task, fileBytes, safeName, requestedScheduleDate));
 
         return Result.ok("原始数据已上传，算法任务已创建", toTaskVO(task));
     }
@@ -225,7 +233,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     }
 
     @SuppressWarnings("unchecked")
-    private void runExternalScheduleTask(AlgorithmTask task, byte[] fileBytes, String sourceFileName) {
+    private void runExternalScheduleTask(AlgorithmTask task,
+                                         byte[] fileBytes,
+                                         String sourceFileName,
+                                         LocalDate requestedScheduleDate) {
         markTaskRunning(task, "原始数据校验通过，正在准备算法工作目录");
         String phase = "准备算法工作目录";
         try {
@@ -242,24 +253,46 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             Path inputFile = taskDir.resolve("input.csv");
             Path outputFile = taskDir.resolve("output.json");
             Path logFile = taskDir.resolve("algorithm.log");
+            Path ordersFile = taskDir.resolve("orders.csv");
             Files.write(inputFile, fileBytes);
+
+            LocalDate orderScheduleDate = resolveOrderScheduleDate(requestedScheduleDate);
+            List<ProductionOrder> orders = orderScheduleDate != null
+                    ? selectOrdersForScheduleDate(orderScheduleDate)
+                    : List.of();
+            if (!orders.isEmpty()) {
+                Files.writeString(ordersFile, buildOrdersCsv(orders), StandardCharsets.UTF_8);
+            }
 
             phase = "调用算法程序";
             task.setProgress(20);
             task.setMessage("正在调用 " + algorithmRuntime + " 算法生成方案");
-            task.setAlgorithmRequestJson(JSON.toJSONString(Map.of(
-                    "runtime", algorithmRuntime,
-                    "command", isMatlabRuntime() ? matlabCommand : algorithmCommand,
-                    "algorithmDir", algorithmDir.toString(),
-                    "scriptFile", scriptFile.toString(),
-                    "taskDir", taskDir.toString(),
-                    "sourceFileName", sourceFileName,
-                    "inputFile", inputFile.toString(),
-                    "outputFile", outputFile.toString()
-            )));
+            Map<String, Object> algorithmRequest = new LinkedHashMap<>();
+            algorithmRequest.put("runtime", algorithmRuntime);
+            algorithmRequest.put("command", isMatlabRuntime() ? matlabCommand : algorithmCommand);
+            algorithmRequest.put("algorithmDir", algorithmDir.toString());
+            algorithmRequest.put("scriptFile", scriptFile.toString());
+            algorithmRequest.put("taskDir", taskDir.toString());
+            algorithmRequest.put("sourceFileName", sourceFileName);
+            algorithmRequest.put("inputFile", inputFile.toString());
+            algorithmRequest.put("outputFile", outputFile.toString());
+            if (orderScheduleDate != null) {
+                algorithmRequest.put("scheduleDate", orderScheduleDate.toString());
+            }
+            algorithmRequest.put("orderCount", orders.size());
+            if (!orders.isEmpty()) {
+                algorithmRequest.put("ordersFile", ordersFile.toString());
+            }
+            task.setAlgorithmRequestJson(JSON.toJSONString(algorithmRequest));
             algorithmTaskMapper.updateById(task);
 
-            ProcessBuilder processBuilder = buildAlgorithmProcessBuilder(algorithmDir, scriptFile, inputFile, outputFile);
+            ProcessBuilder processBuilder = buildAlgorithmProcessBuilder(
+                    algorithmDir,
+                    scriptFile,
+                    inputFile,
+                    outputFile,
+                    !orders.isEmpty() ? ordersFile : null
+            );
             processBuilder.directory(taskDir.toFile());
             processBuilder.redirectErrorStream(true);
             processBuilder.redirectOutput(logFile.toFile());
@@ -300,6 +333,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             Result<ImportPlanResultVO> importResult = importDailyPlan(dailyPlan);
             ImportPlanResultVO importVO = importResult.getData();
             Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
+            markOrdersScheduled(orders);
 
             String realtimeImportWarning = null;
             Object realtimeControl = root.get("realtime_control");
@@ -618,7 +652,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .ecReduction(plan.getEcReduction())
                 .energySavingsRate(energySavingsRate(plan))
                 .avgLoadRate(avgLoadRate(details))
-                .deadlineCompliance(deadlineCompliance(details))
+                .deadlineCompliance(deadlineCompliance(plan, details))
                 .optimalTemperature(plan.getOptimalTemperature())
                 .optimalSpeed(plan.getOptimalSpeed())
                 .totalDemand(plan.getTotalDemand())
@@ -683,9 +717,38 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .divide(capacity, 2, RoundingMode.HALF_UP);
     }
 
-    private BigDecimal deadlineCompliance(List<ProductionScheduleDetail> details) {
+    private BigDecimal deadlineCompliance(ProductionSchedulePlan plan, List<ProductionScheduleDetail> details) {
         if (details == null || details.isEmpty()) {
             return BigDecimal.ZERO;
+        }
+        List<ProductionOrder> orders = plan != null && plan.getScheduleDate() != null
+                ? selectAllOrdersForScheduleDate(plan.getScheduleDate())
+                : List.of();
+        if (!orders.isEmpty()) {
+            BigDecimal[] cumulativeProduction = new BigDecimal[24];
+            BigDecimal runningProduction = BigDecimal.ZERO;
+            Map<Integer, BigDecimal> productionByHour = details.stream()
+                    .collect(Collectors.toMap(
+                            ProductionScheduleDetail::getHourIndex,
+                            detail -> value(detail.getProduction()),
+                            BigDecimal::add
+                    ));
+            for (int hour = 0; hour < 24; hour++) {
+                runningProduction = runningProduction.add(productionByHour.getOrDefault(hour, BigDecimal.ZERO));
+                cumulativeProduction[hour] = runningProduction;
+            }
+
+            BigDecimal required = BigDecimal.ZERO;
+            long fulfilled = 0;
+            for (ProductionOrder order : orders) {
+                required = required.add(value(order.getPlannedQuantity()));
+                int dueHour = Math.min(Math.max(order.getDueTime().getHour(), 0), 23);
+                if (cumulativeProduction[dueHour].compareTo(required) >= 0) {
+                    fulfilled++;
+                }
+            }
+            return BigDecimal.valueOf(fulfilled).multiply(new BigDecimal("100"))
+                    .divide(BigDecimal.valueOf(orders.size()), 2, RoundingMode.HALF_UP);
         }
         long feasible = details.stream()
                 .filter(d -> value(d.getProduction()).compareTo(value(d.getDemand())) >= 0)
@@ -802,6 +865,86 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         }
     }
 
+    private LocalDate resolveOrderScheduleDate(LocalDate requestedScheduleDate) {
+        if (requestedScheduleDate != null) {
+            return requestedScheduleDate;
+        }
+        ProductionOrder earliest = productionOrderMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionOrder>()
+                        .ne(ProductionOrder::getStatus, "COMPLETED")
+                        .orderByAsc(ProductionOrder::getDueTime)
+                        .last("LIMIT 1")
+        );
+        return earliest != null && earliest.getDueTime() != null ? earliest.getDueTime().toLocalDate() : null;
+    }
+
+    private List<ProductionOrder> selectOrdersForScheduleDate(LocalDate scheduleDate) {
+        LocalDateTime start = scheduleDate.atStartOfDay();
+        LocalDateTime end = start.plusDays(1);
+        List<ProductionOrder> orders = productionOrderMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionOrder>()
+                        .ge(ProductionOrder::getDueTime, start)
+                        .lt(ProductionOrder::getDueTime, end)
+                        .ne(ProductionOrder::getStatus, "COMPLETED")
+                        .orderByAsc(ProductionOrder::getPriority)
+                        .orderByAsc(ProductionOrder::getDueTime)
+        );
+        return orders != null ? orders : List.of();
+    }
+
+    private List<ProductionOrder> selectAllOrdersForScheduleDate(LocalDate scheduleDate) {
+        LocalDateTime start = scheduleDate.atStartOfDay();
+        LocalDateTime end = start.plusDays(1);
+        List<ProductionOrder> orders = productionOrderMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionOrder>()
+                        .ge(ProductionOrder::getDueTime, start)
+                        .lt(ProductionOrder::getDueTime, end)
+                        .orderByAsc(ProductionOrder::getDueTime)
+                        .orderByAsc(ProductionOrder::getPriority)
+        );
+        return orders != null ? orders : List.of();
+    }
+
+    private String buildOrdersCsv(List<ProductionOrder> orders) {
+        StringBuilder builder = new StringBuilder("orderNo,plannedQuantity,dueTime,priority,status\n");
+        for (ProductionOrder order : orders) {
+            builder.append(csv(order.getOrderNo())).append(',')
+                    .append(order.getPlannedQuantity() != null ? order.getPlannedQuantity().toPlainString() : "0")
+                    .append(',')
+                    .append(csv(order.getDueTime() != null
+                            ? order.getDueTime().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                            : ""))
+                    .append(',')
+                    .append(order.getPriority() != null ? order.getPriority() : 1)
+                    .append(',')
+                    .append(csv(order.getStatus()))
+                    .append('\n');
+        }
+        return builder.toString();
+    }
+
+    private String csv(String value) {
+        String text = value != null ? value : "";
+        if (text.contains(",") || text.contains("\"") || text.contains("\n") || text.contains("\r")) {
+            return "\"" + text.replace("\"", "\"\"") + "\"";
+        }
+        return text;
+    }
+
+    private void markOrdersScheduled(List<ProductionOrder> orders) {
+        for (ProductionOrder order : orders) {
+            if (order.getId() == null || "COMPLETED".equals(order.getStatus())) {
+                continue;
+            }
+            order.setStatus("SCHEDULED");
+            productionOrderMapper.updateById(order);
+        }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     private boolean isMatlabRuntime() {
         return "matlab".equalsIgnoreCase(algorithmRuntime != null ? algorithmRuntime.trim() : "");
     }
@@ -815,12 +958,22 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private ProcessBuilder buildAlgorithmProcessBuilder(Path algorithmDir,
                                                         Path scriptFile,
                                                         Path inputFile,
-                                                        Path outputFile) {
+                                                        Path outputFile,
+                                                        Path ordersFile) {
         if (isMatlabRuntime()) {
             String matlabScript = "addpath('" + escapeMatlabPath(algorithmDir) + "'); main('"
                     + escapeMatlabPath(inputFile) + "','"
                     + escapeMatlabPath(outputFile) + "')";
             return new ProcessBuilder(matlabCommand, "-batch", matlabScript);
+        }
+        if (ordersFile != null) {
+            return new ProcessBuilder(
+                    algorithmCommand,
+                    scriptFile.toString(),
+                    inputFile.toString(),
+                    outputFile.toString(),
+                    ordersFile.toString()
+            );
         }
         return new ProcessBuilder(
                 algorithmCommand,

@@ -26,19 +26,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.util.Map;
 
-/**
- * 生产管理控制器.
- * <p>
- * 对应接口文档:
- * 4.3 生产订单列表,
- * 4.4 生成生产排产方案,
- * 4.5 查询排产方案详情,
- * 4.5.1 导入日级排产 JSON.
- * </p>
- *
- * @author XQ
- * @since 1.0.0
- */
 @Tag(name = "生产管理", description = "生产订单、排产方案管理")
 @RestController
 @RequestMapping("/api/production")
@@ -54,7 +41,7 @@ public class ProductionController {
         return orderService.listOrders(query);
     }
 
-    @Operation(summary = "上传生产订单 CSV", description = "上传订单/生产需求 CSV，写入 production_order 表。当前用于订单展示和后续 D_total 汇总，不代表已启用订单级 APS 排产")
+    @Operation(summary = "上传生产订单 CSV", description = "上传订单 CSV，写入 production_order 表；生成排产方案时，后端会按排产日导出订单作为算法输入")
     @PostMapping(value = "/orders/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<ImportOrderResultVO> importOrders(
             @Parameter(description = "订单 CSV 文件，字段包含 orderNo/productName/plannedQuantity/dueTime 等", required = true)
@@ -68,12 +55,14 @@ public class ProductionController {
         return scheduleService.generate(dto);
     }
 
-    @Operation(summary = "上传原始数据并生成排产方案", description = "上传钢铁能源 CSV 原始数据，后端异步调用 Python 算法生成排产方案和 MPC 调控结果；必要时可通过配置切回 MATLAB 旧版")
+    @Operation(summary = "上传原始数据并生成排产方案", description = "上传能源 CSV，后端导出排产日订单 CSV，并调用 Python 算法生成排产方案和 MPC 调控结果")
     @PostMapping(value = "/schedules/generate-from-raw-data", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<TaskVO> generateScheduleFromRawData(
             @Parameter(description = "原始能源 CSV 文件，至少包含 timestamp/elec 字段", required = true)
-            @RequestPart("file") MultipartFile file) throws IOException {
-        return scheduleService.generateFromRawData(file.getBytes(), file.getOriginalFilename());
+            @RequestPart("file") MultipartFile file,
+            @Parameter(description = "排产日期，yyyy-MM-dd；不传时自动取最早待排产订单的交期日期")
+            @RequestParam(value = "scheduleDate", required = false) String scheduleDate) throws IOException {
+        return scheduleService.generateFromRawData(file.getBytes(), file.getOriginalFilename(), scheduleDate);
     }
 
     @Operation(summary = "查询排产方案详情", description = "根据方案 ID 查询排产方案的完整结果")
@@ -87,7 +76,7 @@ public class ProductionController {
     @Operation(summary = "按日期查询排产方案", description = "根据日期查询当天最新排产方案及小时明细")
     @GetMapping("/schedules/date/{date}")
     public Result<SchedulePlanVO> getScheduleByDate(
-            @Parameter(description = "排产日期，格式 yyyy-MM-dd", required = true, example = "2026-07-17")
+            @Parameter(description = "排产日期，格式 yyyy-MM-dd", required = true, example = "2026-08-03")
             @PathVariable("date") String date) {
         return scheduleService.getPlanByDate(date);
     }

@@ -6,6 +6,7 @@ import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
 import com.xq.mapper.EvaluationMetricMapper;
 import com.xq.mapper.ProductionLineMapper;
+import com.xq.mapper.ProductionOrderMapper;
 import com.xq.mapper.ProductionScheduleDetailMapper;
 import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.model.dto.ScheduleGenerateDTO;
@@ -52,7 +53,8 @@ class ProductionScheduleServiceImplTest {
                 schedulePlanMapper,
                 scheduleDetailMapper,
                 evaluationMetricMapper,
-                productionLineMapper
+                productionLineMapper,
+                mock(ProductionOrderMapper.class)
         );
 
         ProductionSchedulePlan plan = new ProductionSchedulePlan();
@@ -222,7 +224,8 @@ class ProductionScheduleServiceImplTest {
                 schedulePlanMapper,
                 scheduleDetailMapper,
                 evaluationMetricMapper,
-                productionLineMapper
+                productionLineMapper,
+                mock(ProductionOrderMapper.class)
         );
     }
 

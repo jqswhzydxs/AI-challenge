@@ -4,6 +4,7 @@ Production-energy optimization entrypoint.
 
 Usage:
     python generate_plan.py input.csv output.json
+    python generate_plan.py input.csv output.json orders.csv
 
 This script mirrors the JSON contract of the MATLAB prototype while using only
 the Python standard library, so the backend can be deployed without MATLAB.
@@ -42,6 +43,14 @@ class EnergyPoint:
     timestamp: datetime
     elec: float
     steam: float
+
+
+@dataclass
+class ProductionOrder:
+    order_no: str
+    planned_quantity: float
+    due_time: datetime
+    priority: int
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -91,6 +100,24 @@ def normalize_header(name: str) -> str:
     if key == "steam":
         return "steam"
     return key
+
+
+def normalize_order_header(name: str) -> str:
+    key = (name or "").strip().replace("_", "").replace("-", "").lower()
+    aliases = {
+        "orderno": "order_no",
+        "orderid": "order_no",
+        "plannedquantity": "planned_quantity",
+        "quantity": "planned_quantity",
+        "demandton": "planned_quantity",
+        "weight": "planned_quantity",
+        "duetime": "due_time",
+        "deadline": "due_time",
+        "deliverytime": "due_time",
+        "priority": "priority",
+        "status": "status",
+    }
+    return aliases.get(key, key)
 
 
 def linear_fill(values: Sequence[float | None]) -> List[float]:
@@ -171,6 +198,52 @@ def read_energy_csv(path: Path) -> List[EnergyPoint]:
             raise AlgorithmError(400, "timestamp column must be strictly increasing without duplicates")
 
     return points
+
+
+def read_orders(path: Path) -> tuple[List[ProductionOrder], List[float], datetime | None]:
+    if not path.exists():
+        raise AlgorithmError(404, f"orders file not found: {path}")
+
+    orders: List[ProductionOrder] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            return orders, [0.0] * 24, None
+
+        field_map = {name: normalize_order_header(name) for name in reader.fieldnames}
+        normalized_fields = set(field_map.values())
+        required = {"order_no", "planned_quantity", "due_time"}
+        if not required.issubset(normalized_fields):
+            missing = sorted(required - normalized_fields)
+            raise AlgorithmError(415, f"orders CSV missing fields: {', '.join(missing)}")
+
+        for row in reader:
+            normalized = {field_map[key]: value for key, value in row.items() if key in field_map}
+            order_no = (normalized.get("order_no") or "").strip()
+            quantity = parse_float(normalized.get("planned_quantity"))
+            due_time = parse_timestamp(normalized.get("due_time") or "")
+            priority_value = normalized.get("priority")
+            try:
+                priority = int(priority_value) if priority_value not in (None, "") else 1
+            except ValueError:
+                priority = 1
+
+            if not order_no or quantity is None or quantity <= 0:
+                continue
+            orders.append(ProductionOrder(order_no, quantity, due_time, priority))
+
+    if not orders:
+        return orders, [0.0] * 24, None
+
+    plan_date = min(order.due_time.date() for order in orders)
+    demand = [0.0] * 24
+    for order in orders:
+        if order.due_time.date() != plan_date:
+            continue
+        due_hour = min(max(order.due_time.hour, 0), 23)
+        demand[due_hour] += order.planned_quantity
+
+    return orders, demand, datetime.combine(plan_date, datetime.min.time())
 
 
 def minutes_since_epoch(value: datetime) -> float:
@@ -446,13 +519,26 @@ def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def build_result(input_file: Path) -> dict:
+def build_result(input_file: Path, orders_file: Path | None = None) -> dict:
     raw_points = read_energy_csv(input_file)
     points, granularity = prepare_data(raw_points)
     elec_hourly = aggregate_hourly(points)
     print(f"aggregated hours: {len(elec_hourly)}")
 
-    demand = generate_demand(elec_hourly)
+    orders: List[ProductionOrder] = []
+    plan_start: datetime | None = None
+    demand_source = "energy_estimation"
+    if orders_file is not None:
+        orders, order_demand, plan_start = read_orders(orders_file)
+        if sum(order_demand) > 0:
+            demand = order_demand
+            demand_source = "production_orders"
+            print(f"orders loaded: {len(orders)}, order demand: {sum(demand):.1f} tons")
+        else:
+            demand = generate_demand(elec_hourly)
+            print("orders file has no valid demand, fallback to energy estimation")
+    else:
+        demand = generate_demand(elec_hourly)
     production, heat_state, solver_status = solve_schedule(demand)
     total_production = sum(production)
     temperature, speed, _, optimized_coeff = optimize_process_parameters(total_production)
@@ -463,12 +549,14 @@ def build_result(input_file: Path) -> dict:
     print(f"heat furnace running hours: {sum(heat_state)}")
     print(f"EC reduction: {reduction_rate:.2f}%")
 
-    generated_at = datetime.now()
+    generated_at = plan_start or datetime.now()
     daily_plan = {
         "timestamp": generated_at.strftime("%Y-%m-%d %H:%M:%S"),
         "plan_horizon": 24,
         "unit": "hour",
         "data_granularity": granularity,
+        "demand_source": demand_source,
+        "order_count": len(orders),
         "EC_baseline": BASE_ELEC_COEFF,
         "EC_optimized": optimized_coeff,
         "EC_reduction": reduction_rate,
@@ -530,15 +618,18 @@ def write_error_json(path: Path, error: Exception, input_file: Path | None = Non
 def main(argv: Sequence[str]) -> int:
     input_file = Path(argv[1]) if len(argv) > 1 else Path("steel_data_cleaned.csv")
     output_file = Path(argv[2]) if len(argv) > 2 else Path("output_sample.json")
+    orders_file = Path(argv[3]) if len(argv) > 3 else None
 
     print("========================================")
     print("  Production-energy optimization v1.0 (Python)")
     print("========================================")
     print(f"input: {input_file}")
     print(f"output: {output_file}")
+    if orders_file is not None:
+        print(f"orders: {orders_file}")
 
     try:
-        result = build_result(input_file)
+        result = build_result(input_file, orders_file)
         write_json(output_file, result)
         print("optimization completed")
         return 0
