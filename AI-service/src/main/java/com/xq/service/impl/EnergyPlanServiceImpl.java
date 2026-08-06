@@ -660,7 +660,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         }
         wrapper.orderByAsc(EnergyRealtimeData::getTimestamp);
         if (startTime == null && endTime == null) {
-            wrapper.last("LIMIT 672");
+            wrapper.last("LIMIT 2880");
         }
         return energyRealtimeDataMapper.selectList(wrapper);
     }

@@ -859,9 +859,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (!hasTimestamp || !hasElec) {
             throw new BusinessException(415, "输入格式错误，请确保 CSV 包含 timestamp/date 和 elec/Usage_kWh 字段");
         }
-        int requiredRows = 7 * 24 * 4;
+        int requiredRows = 30 * 24 * 4;
         if (dataRows < requiredRows) {
-            throw new BusinessException(400, "输入数据不足，需要至少7天（672个点）的15分钟数据，当前有效数据行数: " + dataRows);
+            throw new BusinessException(400, "输入数据不足，需要至少30天数据；15分钟粒度不少于2880行，1分钟粒度建议不少于43200行，当前有效数据行数: " + dataRows);
         }
     }
 

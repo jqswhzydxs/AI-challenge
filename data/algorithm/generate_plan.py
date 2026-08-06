@@ -28,6 +28,9 @@ MIN_PRODUCTION = 0.15
 HEAT_EXTRA_CAPACITY = 0.80
 MIN_HEAT_HOURS = 8
 MAX_HEAT_HOURS = 12
+HISTORY_DAYS = 30
+POINTS_PER_DAY_15MIN = 24 * 4
+POINTS_PER_DAY_1MIN = 24 * 60
 
 
 class AlgorithmError(Exception):
@@ -311,22 +314,31 @@ def prepare_data(raw_points: List[EnergyPoint]) -> tuple[List[EnergyPoint], str]
     print(f"raw rows: {len(raw_points)}, estimated granularity: {step_minutes:.2f} minutes")
 
     if step_minutes <= 2:
-        print(f"detected 1-minute data, direct use: {len(raw_points)} rows")
-        return raw_points, "1 minute"
-
-    if 10 <= step_minutes <= 20:
-        required_points = 7 * 24 * 4
+        required_points = HISTORY_DAYS * POINTS_PER_DAY_1MIN
         if len(raw_points) < required_points:
             raise AlgorithmError(
                 400,
-                "insufficient input data; at least 7 days / 672 rows of 15-minute data are required",
+                f"insufficient input data; at least {HISTORY_DAYS} days / {required_points} rows of 1-minute data are required",
+                received_rows=len(raw_points),
+                required_rows=required_points,
+            )
+        print(f"detected 1-minute data, direct use: {len(raw_points)} rows")
+        recent = raw_points[-required_points:]
+        return recent, "1 minute"
+
+    if 10 <= step_minutes <= 20:
+        required_points = HISTORY_DAYS * POINTS_PER_DAY_15MIN
+        if len(raw_points) < required_points:
+            raise AlgorithmError(
+                400,
+                f"insufficient input data; at least {HISTORY_DAYS} days / {required_points} rows of 15-minute data are required",
                 received_rows=len(raw_points),
                 required_rows=required_points,
             )
         recent = raw_points[-required_points:]
         x = [minutes_since_epoch(point.timestamp) for point in recent]
         y = [point.elec for point in recent]
-        expected_points = 7 * 24 * 60
+        expected_points = HISTORY_DAYS * POINTS_PER_DAY_1MIN
         count = int(round(x[-1] - x[0])) + 1
         if count > expected_points * 2:
             raise AlgorithmError(
@@ -366,7 +378,7 @@ def aggregate_hourly(points: Sequence[EnergyPoint]) -> List[float]:
 
 
 def generate_demand(elec_hourly: Sequence[float]) -> List[float]:
-    recent = elec_hourly[-min(168, len(elec_hourly)) :]
+    recent = elec_hourly[-min(HISTORY_DAYS * 24, len(elec_hourly)) :]
     base_demand = (sum(recent) / len(recent)) * DEMAND_ELEC_TO_TON
     rng = random.Random(42)
     return [max(base_demand * (0.7 + 0.6 * rng.random()), base_demand * 0.4) for _ in range(24)]

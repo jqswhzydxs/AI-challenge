@@ -49,9 +49,9 @@
 {
   "status": "error",
   "code": 400,
-  "message": "输入数据不足，需要至少7天（672个点）的15分钟数据",
+  "message": "输入数据不足，需要至少30天数据；15分钟粒度不少于2880行，1分钟粒度不少于43200行",
   "received_rows": 96,
-  "required_rows": 672
+  "required_rows": 2880
 }
 ```
 
