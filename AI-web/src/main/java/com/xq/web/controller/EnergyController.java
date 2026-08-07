@@ -2,6 +2,7 @@ package com.xq.web.controller;
 
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
+import com.xq.model.dto.EnergyRealtimePushDTO;
 import com.xq.model.dto.EnergyPlanGenerateDTO;
 import com.xq.model.dto.PageQueryDTO;
 import com.xq.model.vo.EnergyAnalysisVO;
@@ -10,6 +11,7 @@ import com.xq.model.vo.EnergyConsumptionTrendVO;
 import com.xq.model.vo.EnergyDeviceStatusVO;
 import com.xq.model.vo.EnergyLoadForecastVO;
 import com.xq.model.vo.EnergyPlanVO;
+import com.xq.model.vo.EnergyRealtimePushResultVO;
 import com.xq.model.vo.EnergyTrendVO;
 import com.xq.model.vo.RealtimeDataVO;
 import com.xq.model.vo.TaskVO;
@@ -50,6 +52,18 @@ public class EnergyController {
     @GetMapping("/realtime")
     public Result<RealtimeDataVO> getRealtime(@ParameterObject PageQueryDTO query) {
         return energyDataService.getRealtime(query);
+    }
+
+    @Operation(summary = "推送能源实时数据", description = "模拟采集装置或外部采集程序按分钟推送电、蒸汽等实时数据并入库")
+    @PostMapping("/realtime/push")
+    public Result<EnergyRealtimePushResultVO> pushRealtime(@RequestBody EnergyRealtimePushDTO dto) {
+        return energyDataService.pushRealtime(dto);
+    }
+
+    @Operation(summary = "生成一条模拟能源数据", description = "联调用：按当前分钟生成一条模拟采集点位并入库")
+    @PostMapping("/realtime/mock")
+    public Result<EnergyRealtimePushResultVO> pushMockRealtime() {
+        return energyDataService.pushMockRealtime();
     }
 
     @Operation(summary = "生成能源运行方案", description = "根据能源参数发起异步方案生成任务，返回任务 ID")

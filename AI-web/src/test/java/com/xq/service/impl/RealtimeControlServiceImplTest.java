@@ -50,7 +50,7 @@ class RealtimeControlServiceImplTest {
                 Map.of(
                         "timestamp", "08:00:00",
                         "control", Map.of(
-                                "boiler_load", "11.5",
+                                "boiler_load", "25.5",
                                 "turbine_output", "8.2",
                                 "grid_purchase", "31.0",
                                 "power_factor_target", "0.96"
@@ -62,7 +62,7 @@ class RealtimeControlServiceImplTest {
                 ),
                 Map.of(
                         "timestamp", "2026-07-17 09:00:00",
-                        "boilerLoad", "12.5",
+                        "boilerLoad", "26.5",
                         "turbineOutput", "8.8",
                         "gridPurchase", "28.0",
                         "powerFactorTarget", "0.97",
@@ -90,7 +90,7 @@ class RealtimeControlServiceImplTest {
         MpcRealtimeControl inserted = insertedCaptor.getValue();
         assertEquals(LocalDate.of(2026, 7, 17), inserted.getControlDate());
         assertEquals("08:00:00", inserted.getControlTime());
-        assertEquals(new BigDecimal("11.5"), inserted.getBoilerLoadMw());
+        assertEquals(new BigDecimal("25.5"), inserted.getBoilerLoadMw());
         assertEquals(new BigDecimal("5.5"), inserted.getElecNext5minKwh());
 
         verify(controlMapper, times(1)).updateById(any(MpcRealtimeControl.class));

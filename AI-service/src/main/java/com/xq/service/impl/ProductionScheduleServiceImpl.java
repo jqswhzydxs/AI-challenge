@@ -6,12 +6,14 @@ import com.xq.common.exception.BusinessException;
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
+import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.EvaluationMetricMapper;
 import com.xq.mapper.ProductionLineMapper;
 import com.xq.mapper.ProductionOrderMapper;
 import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EnergyRealtimeData;
 import com.xq.model.entity.EvaluationMetric;
 import com.xq.model.entity.ProductionLine;
 import com.xq.model.entity.ProductionOrder;
@@ -80,6 +82,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private TaskExecutor algorithmTaskExecutor;
     private PlanAutoGenerationService planAutoGenerationService;
     private RealtimeControlService realtimeControlService;
+    private EnergyRealtimeDataMapper energyRealtimeDataMapper;
 
     @Value("${algorithm.runtime:python}")
     private String algorithmRuntime;
@@ -102,6 +105,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Value("${algorithm.timeout-seconds:180}")
     private long algorithmTimeoutSeconds;
 
+    @Value("${algorithm.training-days:7}")
+    private int algorithmTrainingDays;
+
     @Autowired(required = false)
     public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
         this.algorithmTaskExecutor = algorithmTaskExecutor;
@@ -117,10 +123,18 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         this.realtimeControlService = realtimeControlService;
     }
 
+    @Autowired(required = false)
+    public void setEnergyRealtimeDataMapper(EnergyRealtimeDataMapper energyRealtimeDataMapper) {
+        this.energyRealtimeDataMapper = energyRealtimeDataMapper;
+    }
+
     @Override
     public Result<TaskVO> generate(ScheduleGenerateDTO dto) {
         if (dto == null) {
             throw new BusinessException(400, "请求体不能为空");
+        }
+        if (dto.getPlannedQuantity() != null) {
+            return generateFromCollectedData(dto);
         }
         LocalDate scheduleDate = parseDate(dto.getScheduleDate(), "scheduleDate");
         int planHorizon = dto.getPlanHorizon() != null ? dto.getPlanHorizon() : 24;
@@ -142,6 +156,48 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         runAlgorithmTask(() -> generateScheduleResult(task, dto, scheduleDate, planHorizon, planStart));
 
         return Result.ok("排产任务已创建", toTaskVO(task));
+    }
+
+    @Override
+    public Result<TaskVO> generateFromCollectedData(ScheduleGenerateDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(400, "请求体不能为空");
+        }
+        LocalDate scheduleDate = parseDate(dto.getScheduleDate(), "scheduleDate");
+        int planHorizon = dto.getPlanHorizon() != null ? dto.getPlanHorizon() : 24;
+        if (planHorizon != 24) {
+            throw new BusinessException(400, "当前算法固定生成 24 小时日计划，planHorizon 请填写 24 或不填");
+        }
+        if (dto.getPlannedQuantity() == null || dto.getPlannedQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException(400, "plannedQuantity 必须填写为正数，前端只需录入次日订单产量");
+        }
+        ensureSimpleOrder(scheduleDate, dto);
+        List<EnergyRealtimeData> energyRows = selectEnergyRowsForAlgorithm(algorithmTrainingDays);
+        byte[] inputBytes = buildEnergyCsv(energyRows).getBytes(StandardCharsets.UTF_8);
+
+        AlgorithmTask task = new AlgorithmTask();
+        task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
+        task.setStatus(TaskStatus.PENDING);
+        task.setProgress(0);
+        task.setMessage("已读取采集能源数据，等待调用算法");
+        task.setRetryCount(0);
+        task.setAlgorithmName(isMatlabRuntime() ? "MATLAB_MILP_MPC" : "PYTHON_MILP_MPC");
+        task.setAlgorithmVersion(isMatlabRuntime() ? "v1.1" : "v1.0");
+        task.setResultFileName("output.json");
+        task.setTrainingRecordCount(energyRows.size());
+        Map<String, Object> frontendRequest = new LinkedHashMap<>();
+        frontendRequest.put("source", "energy_realtime_data");
+        frontendRequest.put("scheduleDate", scheduleDate.toString());
+        frontendRequest.put("plannedQuantity", dto.getPlannedQuantity());
+        frontendRequest.put("trainingDays", algorithmTrainingDays);
+        frontendRequest.put("trainingRecordCount", energyRows.size());
+        task.setFrontendRequestJson(JSON.toJSONString(frontendRequest));
+        task.setStartTime(LocalDateTime.now());
+        algorithmTaskMapper.insert(task);
+
+        runAlgorithmTask(() -> runExternalScheduleTask(task, inputBytes, "collected_energy_realtime_data.csv", scheduleDate));
+
+        return Result.ok("已使用采集能源数据创建算法任务", toTaskVO(task));
     }
 
     @Override
@@ -863,6 +919,101 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (dataRows < requiredRows) {
             throw new BusinessException(400, "输入数据不足，需要至少30天数据；15分钟粒度不少于2880行，1分钟粒度建议不少于43200行，当前有效数据行数: " + dataRows);
         }
+    }
+
+    private void ensureSimpleOrder(LocalDate scheduleDate, ScheduleGenerateDTO dto) {
+        String orderNo = "AUTO-" + scheduleDate;
+        ProductionOrder order = new ProductionOrder();
+        order.setOrderNo(orderNo);
+        order.setProductName(hasText(dto.getProductName()) ? dto.getProductName().trim() : "次日轧钢计划");
+        order.setProductSpec("AUTO");
+        order.setPlannedQuantity(dto.getPlannedQuantity());
+        order.setUnit("t");
+        order.setDueTime(scheduleDate.atTime(23, 59, 59));
+        order.setPriority(1);
+        order.setStatus("PENDING");
+        order.setDeleted(0);
+        order.setRemark("前端录入产量自动生成");
+
+        ProductionOrder existing = productionOrderMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductionOrder>()
+                        .eq(ProductionOrder::getOrderNo, orderNo)
+                        .last("LIMIT 1")
+        );
+        if (existing == null) {
+            productionOrderMapper.insert(order);
+            return;
+        }
+        order.setId(existing.getId());
+        productionOrderMapper.updateById(order);
+    }
+
+    private List<EnergyRealtimeData> selectEnergyRowsForAlgorithm(int trainingDays) {
+        if (energyRealtimeDataMapper == null) {
+            throw new BusinessException(500, "能源实时数据 Mapper 未初始化，无法从数据库组装算法输入");
+        }
+        int safeDays = Math.max(trainingDays, 1);
+        int minRowsFor15Minute = safeDays * 24 * 4;
+        int rowsFor1Minute = safeDays * 24 * 60;
+
+        List<EnergyRealtimeData> mockRows = selectEnergyRowsBySource("MOCK_DEVICE", rowsFor1Minute);
+        List<EnergyRealtimeData> rows = mockRows.size() >= rowsFor1Minute
+                ? mockRows
+                : selectLatestEnergyRows(rowsFor1Minute * 2);
+        rows = deduplicateAndSortEnergyRows(rows);
+        if (rows.size() > rowsFor1Minute) {
+            rows = rows.subList(rows.size() - rowsFor1Minute, rows.size());
+        }
+        if (rows.size() < minRowsFor15Minute) {
+            throw new BusinessException(400, "能源采集数据不足，至少需要 " + safeDays
+                    + " 天历史数据；当前可用记录数: " + rows.size()
+                    + "，请等待模拟装置补齐或调用 /api/energy/realtime/push 补录");
+        }
+        return rows;
+    }
+
+    private List<EnergyRealtimeData> selectEnergyRowsBySource(String source, int limit) {
+        List<EnergyRealtimeData> rows = energyRealtimeDataMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EnergyRealtimeData>()
+                        .eq(EnergyRealtimeData::getSource, source)
+                        .orderByDesc(EnergyRealtimeData::getTimestamp)
+                        .last("LIMIT " + Math.max(limit, 1))
+        );
+        return deduplicateAndSortEnergyRows(rows);
+    }
+
+    private List<EnergyRealtimeData> selectLatestEnergyRows(int limit) {
+        List<EnergyRealtimeData> rows = energyRealtimeDataMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EnergyRealtimeData>()
+                        .orderByDesc(EnergyRealtimeData::getTimestamp)
+                        .last("LIMIT " + Math.max(limit, 1))
+        );
+        return deduplicateAndSortEnergyRows(rows);
+    }
+
+    private List<EnergyRealtimeData> deduplicateAndSortEnergyRows(List<EnergyRealtimeData> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        Map<LocalDateTime, EnergyRealtimeData> byTimestamp = new LinkedHashMap<>();
+        rows.stream()
+                .filter(row -> row.getTimestamp() != null && row.getElectricityConsumption() != null)
+                .sorted(Comparator.comparing(EnergyRealtimeData::getTimestamp))
+                .forEach(row -> byTimestamp.putIfAbsent(row.getTimestamp(), row));
+        return new ArrayList<>(byTimestamp.values());
+    }
+
+    private String buildEnergyCsv(List<EnergyRealtimeData> rows) {
+        StringBuilder builder = new StringBuilder("timestamp,elec,steam\n");
+        for (EnergyRealtimeData row : rows) {
+            builder.append(row.getTimestamp().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                    .append(',')
+                    .append(row.getElectricityConsumption() != null ? row.getElectricityConsumption().toPlainString() : "")
+                    .append(',')
+                    .append(row.getSteamConsumption() != null ? row.getSteamConsumption().toPlainString() : "")
+                    .append('\n');
+        }
+        return builder.toString();
     }
 
     private LocalDate resolveOrderScheduleDate(LocalDate requestedScheduleDate) {

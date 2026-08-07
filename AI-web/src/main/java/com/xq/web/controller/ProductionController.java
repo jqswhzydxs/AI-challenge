@@ -55,7 +55,13 @@ public class ProductionController {
         return scheduleService.generate(dto);
     }
 
-    @Operation(summary = "上传原始数据并生成排产方案", description = "上传能源 CSV，后端导出排产日订单 CSV，并调用 Python 算法生成排产方案和 MPC 调控结果")
+    @Operation(summary = "使用已采集能源数据生成排产方案", description = "前端只需录入排产日期和次日订单产量，后端自动读取 energy_realtime_data 作为算法能源输入")
+    @PostMapping("/schedules/generate-from-collected-data")
+    public Result<TaskVO> generateScheduleFromCollectedData(@Valid @RequestBody ScheduleGenerateDTO dto) {
+        return scheduleService.generateFromCollectedData(dto);
+    }
+
+    @Operation(summary = "上传原始数据并生成排产方案", description = "补录/联调用：上传能源 CSV，正式前端流程请使用 generate-from-collected-data")
     @PostMapping(value = "/schedules/generate-from-raw-data", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<TaskVO> generateScheduleFromRawData(
             @Parameter(description = "原始能源 CSV 文件，至少包含 timestamp/elec 字段", required = true)

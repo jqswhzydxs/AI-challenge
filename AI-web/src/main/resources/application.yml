@@ -59,3 +59,13 @@ algorithm:
   working-dir: ${ALGORITHM_WORKING_DIR:data/algorithm}
   task-dir: ${ALGORITHM_TASK_DIR:target/algorithm-tasks}
   timeout-seconds: ${ALGORITHM_TIMEOUT_SECONDS:180}
+  training-days: ${ALGORITHM_TRAINING_DAYS:7}
+
+# Mock energy device for demos without plant-side realtime interfaces.
+# Disable with MOCK_DEVICE_ENABLED=false when a real collector posts to /api/energy/realtime/push.
+mock-device:
+  enabled: ${MOCK_DEVICE_ENABLED:true}
+  interval-ms: ${MOCK_DEVICE_INTERVAL_MS:60000}
+  initial-delay-ms: ${MOCK_DEVICE_INITIAL_DELAY_MS:5000}
+  backfill-on-startup: ${MOCK_DEVICE_BACKFILL_ON_STARTUP:true}
+  backfill-days: ${MOCK_DEVICE_BACKFILL_DAYS:7}
