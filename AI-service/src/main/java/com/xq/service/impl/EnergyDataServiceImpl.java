@@ -13,16 +13,27 @@ import com.xq.model.vo.RealtimeDataPointVO;
 import com.xq.model.vo.RealtimeDataVO;
 import com.xq.service.EnergyDataService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedReader;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.DayOfWeek;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -30,9 +41,17 @@ import java.util.stream.Collectors;
 public class EnergyDataServiceImpl implements EnergyDataService {
 
     private static final String MOCK_SOURCE = "MOCK_DEVICE";
+    private static final String REPLAY_MODE = "replay";
     private static final DateTimeFormatter NORMAL_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final EnergyRealtimeDataMapper energyRealtimeDataMapper;
+    private volatile List<ReplayPoint> replayPoints;
+
+    @Value("${mock-device.mode:replay}")
+    private String mockDeviceMode;
+
+    @Value("${mock-device.replay-file:data/algorithm/steel_data_cleaned.csv}")
+    private String mockDeviceReplayFile;
 
     @Override
     public Result<RealtimeDataVO> getRealtime(PageQueryDTO query) {
@@ -168,6 +187,11 @@ public class EnergyDataServiceImpl implements EnergyDataService {
     }
 
     private EnergyRealtimePushDTO mockPoint(LocalDateTime timestamp) {
+        EnergyRealtimePushDTO replay = replayPoint(timestamp);
+        if (replay != null) {
+            return replay;
+        }
+
         int minuteOfDay = timestamp.getHour() * 60 + timestamp.getMinute();
         double dayWave = Math.sin((minuteOfDay / 1440.0) * Math.PI * 2 - Math.PI / 2);
         double hourWave = Math.sin((minuteOfDay / 60.0) * Math.PI * 2);
@@ -184,9 +208,126 @@ public class EnergyDataServiceImpl implements EnergyDataService {
         dto.setLaggingPowerFactor(new BigDecimal("0.9600"));
         dto.setLeadingPowerFactor(new BigDecimal("0.9800"));
         dto.setLoadType(loadType(timestamp));
-        dto.setDataQuality("NORMAL");
+        dto.setDataQuality("SYNTHETIC_FALLBACK");
         dto.setSource(MOCK_SOURCE);
         return dto;
+    }
+
+    private EnergyRealtimePushDTO replayPoint(LocalDateTime timestamp) {
+        if (!REPLAY_MODE.equalsIgnoreCase(mockDeviceMode != null ? mockDeviceMode.trim() : "")) {
+            return null;
+        }
+        List<ReplayPoint> points = loadReplayPoints();
+        if (points.isEmpty()) {
+            return null;
+        }
+        long minuteIndex = timestamp.toEpochSecond(ZoneOffset.ofHours(8)) / 60;
+        ReplayPoint point = points.get(Math.floorMod(minuteIndex, points.size()));
+
+        EnergyRealtimePushDTO dto = new EnergyRealtimePushDTO();
+        dto.setTimestamp(timestamp.format(NORMAL_TIME_FORMATTER));
+        dto.setElectricityConsumption(point.electricity);
+        dto.setSteamConsumption(point.steam);
+        dto.setCarbonEmissionTco2(point.carbon);
+        dto.setLaggingReactivePowerKvarh(point.laggingReactivePower);
+        dto.setLeadingReactivePowerKvarh(point.leadingReactivePower);
+        dto.setLaggingPowerFactor(point.laggingPowerFactor);
+        dto.setLeadingPowerFactor(point.leadingPowerFactor);
+        dto.setLoadType(hasText(point.loadType) ? point.loadType : loadType(timestamp));
+        dto.setDataQuality("REPLAY_SAMPLE");
+        dto.setSource(MOCK_SOURCE);
+        return dto;
+    }
+
+    private List<ReplayPoint> loadReplayPoints() {
+        List<ReplayPoint> cached = replayPoints;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (this) {
+            if (replayPoints != null) {
+                return replayPoints;
+            }
+            replayPoints = readReplayPoints();
+            return replayPoints;
+        }
+    }
+
+    private List<ReplayPoint> readReplayPoints() {
+        Path path = Paths.get(mockDeviceReplayFile).toAbsolutePath().normalize();
+        if (!Files.exists(path)) {
+            return List.of();
+        }
+        List<ReplayPoint> points = new ArrayList<>();
+        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String headerLine = reader.readLine();
+            if (!hasText(headerLine)) {
+                return List.of();
+            }
+            Map<String, Integer> header = replayHeader(headerLine);
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] values = line.split(",", -1);
+                BigDecimal electricity = csvDecimal(values, header, "elec", "usage_kwh", "power", "power_kw");
+                if (electricity == null || electricity.compareTo(BigDecimal.ZERO) <= 0) {
+                    continue;
+                }
+                ReplayPoint point = new ReplayPoint();
+                point.electricity = electricity;
+                point.steam = defaultDecimal(csvDecimal(values, header, "steam"),
+                        electricity.multiply(new BigDecimal("0.005")).add(new BigDecimal("0.5")));
+                point.carbon = defaultDecimal(csvDecimal(values, header, "co2_tco2_", "co2", "carbon"),
+                        electricity.multiply(new BigDecimal("0.00057")));
+                point.laggingReactivePower = csvDecimal(values, header, "lagging_current_reactive_power_kvarh", "lagging_reactive_power_kvarh");
+                point.leadingReactivePower = csvDecimal(values, header, "leading_current_reactive_power_kvarh", "leading_reactive_power_kvarh");
+                point.laggingPowerFactor = csvDecimal(values, header, "lagging_current_power_factor", "lagging_power_factor");
+                point.leadingPowerFactor = csvDecimal(values, header, "leading_current_power_factor", "leading_power_factor");
+                point.loadType = csvText(values, header, "load_type", "loadtype");
+                points.add(point);
+            }
+        } catch (IOException | NumberFormatException e) {
+            return List.of();
+        }
+        return points;
+    }
+
+    private Map<String, Integer> replayHeader(String headerLine) {
+        String[] names = headerLine.split(",", -1);
+        Map<String, Integer> header = new HashMap<>();
+        for (int i = 0; i < names.length; i++) {
+            header.put(normalizeHeader(names[i]), i);
+        }
+        return header;
+    }
+
+    private BigDecimal csvDecimal(String[] values, Map<String, Integer> header, String... names) {
+        String text = csvText(values, header, names);
+        return hasText(text) ? new BigDecimal(text.trim()) : null;
+    }
+
+    private String csvText(String[] values, Map<String, Integer> header, String... names) {
+        for (String name : names) {
+            Integer index = header.get(normalizeHeader(name));
+            if (index != null && index >= 0 && index < values.length) {
+                return values[index];
+            }
+        }
+        return null;
+    }
+
+    private String normalizeHeader(String value) {
+        return value != null ? value.trim().replace("-", "_").replace("(", "_").replace(")", "_").toLowerCase() : "";
+    }
+
+    private static class ReplayPoint {
+        private BigDecimal electricity;
+        private BigDecimal steam;
+        private BigDecimal carbon;
+        private BigDecimal laggingReactivePower;
+        private BigDecimal leadingReactivePower;
+        private BigDecimal laggingPowerFactor;
+        private BigDecimal leadingPowerFactor;
+        private String loadType;
     }
 
     private LocalDateTime parseTimestamp(String value) {

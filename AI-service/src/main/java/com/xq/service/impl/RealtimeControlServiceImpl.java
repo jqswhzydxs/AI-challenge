@@ -8,24 +8,33 @@ import com.xq.common.exception.BusinessException;
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
+import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.MpcRealtimeControlMapper;
+import com.xq.mapper.ProductionScheduleDetailMapper;
+import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.model.dto.PageQueryDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EnergyRealtimeData;
 import com.xq.model.entity.MpcRealtimeControl;
+import com.xq.model.entity.ProductionScheduleDetail;
+import com.xq.model.entity.ProductionSchedulePlan;
 import com.xq.model.vo.RealtimeControlImportResultVO;
 import com.xq.model.vo.RealtimeControlVO;
 import com.xq.service.RealtimeControlService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +56,24 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
 
     private final AlgorithmTaskMapper algorithmTaskMapper;
     private final MpcRealtimeControlMapper mpcRealtimeControlMapper;
+    private EnergyRealtimeDataMapper energyRealtimeDataMapper;
+    private ProductionSchedulePlanMapper productionSchedulePlanMapper;
+    private ProductionScheduleDetailMapper productionScheduleDetailMapper;
+
+    @Autowired(required = false)
+    public void setEnergyRealtimeDataMapper(EnergyRealtimeDataMapper energyRealtimeDataMapper) {
+        this.energyRealtimeDataMapper = energyRealtimeDataMapper;
+    }
+
+    @Autowired(required = false)
+    public void setProductionSchedulePlanMapper(ProductionSchedulePlanMapper productionSchedulePlanMapper) {
+        this.productionSchedulePlanMapper = productionSchedulePlanMapper;
+    }
+
+    @Autowired(required = false)
+    public void setProductionScheduleDetailMapper(ProductionScheduleDetailMapper productionScheduleDetailMapper) {
+        this.productionScheduleDetailMapper = productionScheduleDetailMapper;
+    }
 
     @Override
     public Result<RealtimeControlVO> getLatest() {
@@ -71,6 +98,193 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
         long total = mpcRealtimeControlMapper.countHistory(startDate, endDate);
         List<RealtimeControlVO> records = mpcRealtimeControlMapper.selectHistoryVO(startDate, endDate, offset, pageSize);
         return Result.ok(PageResult.of(total, pageNum, pageSize, records));
+    }
+
+    @Override
+    @Transactional
+    public Result<RealtimeControlVO> runRealtimeMpcTick() {
+        EnergyRealtimeData latestEnergy = selectLatestEnergyPoint();
+        ProductionSchedulePlan plan = selectPlanForMpc(latestEnergy.getTimestamp().toLocalDate());
+        ProductionScheduleDetail detail = selectDetailForMpc(plan, latestEnergy.getTimestamp().getHour());
+        MpcRealtimeControl previous = selectPreviousControl();
+
+        BigDecimal plannedElecPerMinute = value(detail.getElecForecast())
+                .divide(new BigDecimal("60"), 6, RoundingMode.HALF_UP);
+        BigDecimal actualElec = value(latestEnergy.getElectricityConsumption());
+        BigDecimal actualSteam = value(latestEnergy.getSteamConsumption());
+        BigDecimal elecDeviationRate = percentDeviation(actualElec, plannedElecPerMinute);
+        BigDecimal steamPlan = plannedElecPerMinute.multiply(new BigDecimal("0.0052")).add(new BigDecimal("0.8"));
+        BigDecimal steamDeviationRate = percentDeviation(actualSteam, steamPlan);
+
+        BigDecimal production = value(detail.getProduction());
+        BigDecimal boilerBase = new BigDecimal("24.00").add(production.multiply(new BigDecimal("2.10")));
+        BigDecimal turbineBase = new BigDecimal("8.00").add(production.multiply(new BigDecimal("0.45")));
+        BigDecimal elecCorrection = elecDeviationRate.multiply(new BigDecimal("0.12"));
+        BigDecimal steamCorrection = steamDeviationRate.multiply(new BigDecimal("0.08"));
+
+        BigDecimal boilerTarget = boilerBase.add(steamCorrection).add(elecCorrection);
+        BigDecimal turbineTarget = turbineBase.add(elecCorrection.multiply(new BigDecimal("0.35")));
+        if (previous != null) {
+            boilerTarget = applyRamp(previous.getBoilerLoadMw(), boilerTarget, new BigDecimal("5.00"));
+            turbineTarget = applyRamp(previous.getTurbineOutputMw(), turbineTarget, new BigDecimal("2.00"));
+        }
+
+        MpcRealtimeControl control = new MpcRealtimeControl();
+        control.setTaskId(null);
+        control.setControlDate(latestEnergy.getTimestamp().toLocalDate());
+        control.setControlTime(latestEnergy.getTimestamp().toLocalTime().withSecond(0).withNano(0).format(DateTimeFormatter.ofPattern("HH:mm:ss")));
+        control.setRawTimestamp(latestEnergy.getTimestamp().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        control.setBoilerLoadMw(clamp(boilerTarget, BOILER_MIN_LOAD_MW, BOILER_MAX_LOAD_MW));
+        control.setTurbineOutputMw(clamp(turbineTarget, TURBINE_MIN_OUTPUT_MW, TURBINE_MAX_OUTPUT_MW));
+        control.setGridPurchaseKwh(actualElec.subtract(control.getTurbineOutputMw().multiply(new BigDecimal("0.50"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
+        control.setPowerFactorTarget(new BigDecimal("0.950000"));
+        control.setElecNext5minKwh(actualElec.multiply(new BigDecimal("5")).add(elecDeviationRate.multiply(new BigDecimal("0.02"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
+        control.setSteamNext5minT(actualSteam.multiply(new BigDecimal("5")).add(steamDeviationRate.multiply(new BigDecimal("0.01"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
+        control.setSourceFileName("realtime_mpc_tick");
+        Map<String, Object> raw = new LinkedHashMap<>();
+        raw.put("mode", "ROLLING_MPC");
+        raw.put("energyDataId", latestEnergy.getId());
+        raw.put("scheduleId", plan.getId());
+        raw.put("scheduleDetailId", detail.getId());
+        raw.put("hourIndex", detail.getHourIndex());
+        raw.put("actualElec", actualElec);
+        raw.put("plannedElecPerMinute", plannedElecPerMinute);
+        raw.put("elecDeviationRate", elecDeviationRate);
+        raw.put("actualSteam", actualSteam);
+        raw.put("plannedSteamPerMinute", steamPlan);
+        raw.put("steamDeviationRate", steamDeviationRate);
+        raw.put("previousControlId", previous != null ? previous.getId() : null);
+        control.setRawJson(JSON.toJSONString(raw));
+        validateControlBounds(control);
+
+        MpcRealtimeControl existing = mpcRealtimeControlMapper.selectOne(
+                new LambdaQueryWrapper<MpcRealtimeControl>()
+                        .eq(MpcRealtimeControl::getControlDate, control.getControlDate())
+                        .eq(MpcRealtimeControl::getControlTime, control.getControlTime())
+                        .last("LIMIT 1")
+        );
+        if (existing == null) {
+            mpcRealtimeControlMapper.insert(control);
+        } else {
+            control.setId(existing.getId());
+            mpcRealtimeControlMapper.updateById(control);
+        }
+
+        return getLatest();
+    }
+
+    private EnergyRealtimeData selectLatestEnergyPoint() {
+        if (energyRealtimeDataMapper == null) {
+            throw new BusinessException(500, "能源实时数据 Mapper 未初始化，无法执行滚动 MPC");
+        }
+        EnergyRealtimeData latest = energyRealtimeDataMapper.selectOne(
+                new LambdaQueryWrapper<EnergyRealtimeData>()
+                        .orderByDesc(EnergyRealtimeData::getTimestamp)
+                        .orderByDesc(EnergyRealtimeData::getId)
+                        .last("LIMIT 1")
+        );
+        if (latest == null) {
+            throw new BusinessException(404, "暂无能源实时采集数据，无法执行滚动 MPC");
+        }
+        return latest;
+    }
+
+    private ProductionSchedulePlan selectPlanForMpc(LocalDate controlDate) {
+        if (productionSchedulePlanMapper == null) {
+            throw new BusinessException(500, "排产方案 Mapper 未初始化，无法执行滚动 MPC");
+        }
+        ProductionSchedulePlan sameDay = productionSchedulePlanMapper.selectOne(
+                new LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .eq(ProductionSchedulePlan::getScheduleDate, controlDate)
+                        .eq(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+                        .orderByDesc(ProductionSchedulePlan::getCreateTime)
+                        .last("LIMIT 1")
+        );
+        if (sameDay != null) {
+            return sameDay;
+        }
+        ProductionSchedulePlan latest = productionSchedulePlanMapper.selectOne(
+                new LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .eq(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+                        .orderByDesc(ProductionSchedulePlan::getCreateTime)
+                        .last("LIMIT 1")
+        );
+        if (latest == null) {
+            throw new BusinessException(404, "暂无成功的日级排产方案，无法执行滚动 MPC");
+        }
+        return latest;
+    }
+
+    private ProductionScheduleDetail selectDetailForMpc(ProductionSchedulePlan plan, int hour) {
+        if (productionScheduleDetailMapper == null) {
+            throw new BusinessException(500, "排产明细 Mapper 未初始化，无法执行滚动 MPC");
+        }
+        ProductionScheduleDetail detail = productionScheduleDetailMapper.selectOne(
+                new LambdaQueryWrapper<ProductionScheduleDetail>()
+                        .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
+                        .eq(ProductionScheduleDetail::getHourIndex, hour)
+                        .last("LIMIT 1")
+        );
+        if (detail != null) {
+            return detail;
+        }
+        detail = productionScheduleDetailMapper.selectOne(
+                new LambdaQueryWrapper<ProductionScheduleDetail>()
+                        .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
+                        .orderByAsc(ProductionScheduleDetail::getHourIndex)
+                        .last("LIMIT 1")
+        );
+        if (detail == null) {
+            throw new BusinessException(404, "排产方案缺少小时明细，无法执行滚动 MPC");
+        }
+        return detail;
+    }
+
+    private MpcRealtimeControl selectPreviousControl() {
+        return mpcRealtimeControlMapper.selectOne(
+                new LambdaQueryWrapper<MpcRealtimeControl>()
+                        .orderByDesc(MpcRealtimeControl::getControlDate)
+                        .orderByDesc(MpcRealtimeControl::getControlTime)
+                        .orderByDesc(MpcRealtimeControl::getId)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private BigDecimal percentDeviation(BigDecimal actual, BigDecimal planned) {
+        if (planned == null || planned.compareTo(BigDecimal.ZERO) == 0) {
+            return BigDecimal.ZERO;
+        }
+        return actual.subtract(planned)
+                .multiply(new BigDecimal("100"))
+                .divide(planned.abs(), 6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal applyRamp(BigDecimal previous, BigDecimal target, BigDecimal maxStep) {
+        if (previous == null) {
+            return target;
+        }
+        BigDecimal delta = target.subtract(previous);
+        if (delta.compareTo(maxStep) > 0) {
+            return previous.add(maxStep);
+        }
+        if (delta.compareTo(maxStep.negate()) < 0) {
+            return previous.subtract(maxStep);
+        }
+        return target;
+    }
+
+    private BigDecimal clamp(BigDecimal value, BigDecimal min, BigDecimal max) {
+        if (value.compareTo(min) < 0) {
+            return min.setScale(6, RoundingMode.HALF_UP);
+        }
+        if (value.compareTo(max) > 0) {
+            return max.setScale(6, RoundingMode.HALF_UP);
+        }
+        return value.setScale(6, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal value(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
     }
 
     @Override

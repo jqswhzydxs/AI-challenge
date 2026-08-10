@@ -13,4 +13,6 @@ public interface RealtimeControlService {
     Result<PageResult<RealtimeControlVO>> getHistory(PageQueryDTO query);
 
     Result<RealtimeControlImportResultVO> importRealtimeControl(Object realtimeControlJson, String controlDate, String sourceFileName);
+
+    Result<RealtimeControlVO> runRealtimeMpcTick();
 }

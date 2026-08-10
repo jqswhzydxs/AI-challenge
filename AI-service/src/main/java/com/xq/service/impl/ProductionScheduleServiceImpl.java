@@ -6,6 +6,8 @@ import com.xq.common.exception.BusinessException;
 import com.xq.common.result.PageResult;
 import com.xq.common.result.Result;
 import com.xq.mapper.AlgorithmTaskMapper;
+import com.xq.mapper.EnergyPlanDetailMapper;
+import com.xq.mapper.EnergyPlanMapper;
 import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.EvaluationMetricMapper;
 import com.xq.mapper.ProductionLineMapper;
@@ -13,6 +15,8 @@ import com.xq.mapper.ProductionOrderMapper;
 import com.xq.model.dto.ScheduleCompareDTO;
 import com.xq.model.dto.ScheduleGenerateDTO;
 import com.xq.model.entity.AlgorithmTask;
+import com.xq.model.entity.EnergyPlan;
+import com.xq.model.entity.EnergyPlanDetail;
 import com.xq.model.entity.EnergyRealtimeData;
 import com.xq.model.entity.EvaluationMetric;
 import com.xq.model.entity.ProductionLine;
@@ -57,6 +61,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -83,6 +88,8 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private PlanAutoGenerationService planAutoGenerationService;
     private RealtimeControlService realtimeControlService;
     private EnergyRealtimeDataMapper energyRealtimeDataMapper;
+    private EnergyPlanMapper energyPlanMapper;
+    private EnergyPlanDetailMapper energyPlanDetailMapper;
 
     @Value("${algorithm.runtime:python}")
     private String algorithmRuntime;
@@ -126,6 +133,16 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Autowired(required = false)
     public void setEnergyRealtimeDataMapper(EnergyRealtimeDataMapper energyRealtimeDataMapper) {
         this.energyRealtimeDataMapper = energyRealtimeDataMapper;
+    }
+
+    @Autowired(required = false)
+    public void setEnergyPlanMapper(EnergyPlanMapper energyPlanMapper) {
+        this.energyPlanMapper = energyPlanMapper;
+    }
+
+    @Autowired(required = false)
+    public void setEnergyPlanDetailMapper(EnergyPlanDetailMapper energyPlanDetailMapper) {
+        this.energyPlanDetailMapper = energyPlanDetailMapper;
     }
 
     @Override
@@ -391,6 +408,20 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
             markOrdersScheduled(orders);
 
+            String energyImportWarning = null;
+            Object algorithmEnergyPlan = root.get("energy_plan");
+            if (algorithmEnergyPlan != null) {
+                phase = "import algorithm energy_plan";
+                try {
+                    importAlgorithmEnergyPlan(algorithmEnergyPlan, scheduleId, task.getId(), dailyPlan);
+                    if (planAutoGenerationService != null) {
+                        planAutoGenerationService.autoGenerateAfterScheduleImported(scheduleId);
+                    }
+                } catch (RuntimeException energyException) {
+                    energyImportWarning = trimMessage(energyException.getMessage());
+                }
+            }
+
             String realtimeImportWarning = null;
             Object realtimeControl = root.get("realtime_control");
             if (realtimeControl != null && realtimeControlService != null) {
@@ -416,6 +447,175 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             RuntimeException wrapped = new BusinessException(500, "算法任务执行失败，阶段: " + phase + "，原因: " + e.getMessage());
             markTaskFailed(task, wrapped);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void importAlgorithmEnergyPlan(Object energyPlanObject,
+                                           Long scheduleId,
+                                           Long taskId,
+                                           Map<String, Object> dailyPlan) {
+        if (scheduleId == null) {
+            throw new BusinessException(500, "scheduleId is required before importing algorithm energy_plan");
+        }
+        if (energyPlanMapper == null || energyPlanDetailMapper == null) {
+            throw new BusinessException(500, "EnergyPlan mapper is not initialized");
+        }
+        if (!(energyPlanObject instanceof Map<?, ?>)) {
+            throw new BusinessException(400, "energy_plan must be a JSON object");
+        }
+        Map<String, Object> energyPlanJson = (Map<String, Object>) energyPlanObject;
+        Object detailsObject = energyPlanJson.get("details");
+        if (!(detailsObject instanceof List<?> details) || details.isEmpty()) {
+            throw new BusinessException(400, "energy_plan.details must not be empty");
+        }
+
+        deleteExistingEnergyPlans(scheduleId);
+
+        LocalDateTime planStart = parsePlanStart(energyPlanJson, dailyPlan);
+        EnergyPlan plan = new EnergyPlan();
+        plan.setTaskId(taskId);
+        plan.setSourceScheduleId(scheduleId);
+        plan.setPlanDate(planStart.toLocalDate());
+        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setObjective(textValue(energyPlanJson, "objective", "cost_energy_carbon_executability"));
+        plan.setElectricPriceMode(textValue(energyPlanJson, "electric_price_mode", "PEAK_VALLEY"));
+        plan.setTimeInterval(intValue(energyPlanJson.get("time_interval"), 60));
+        plan.setRemark("Generated by algorithm energy_plan from output.json");
+
+        BigDecimal electricityCost = getDecimalAny(energyPlanJson, null, "electricity_cost", "electricityCost");
+        BigDecimal steamCost = getDecimalAny(energyPlanJson, null, "steam_cost", "steamCost");
+        BigDecimal totalCost = getDecimalAny(energyPlanJson, null, "total_energy_cost", "totalEnergyCost");
+        if (electricityCost == null || steamCost == null || totalCost == null) {
+            BigDecimal[] costs = calculateAlgorithmEnergyCosts((List<?>) details);
+            electricityCost = electricityCost != null ? electricityCost : costs[0];
+            steamCost = steamCost != null ? steamCost : costs[1];
+            totalCost = totalCost != null ? totalCost : electricityCost.add(steamCost);
+        }
+        plan.setElectricityCost(scale(electricityCost, 2));
+        plan.setSteamCost(scale(steamCost, 2));
+        plan.setTotalEnergyCost(scale(totalCost, 2));
+        energyPlanMapper.insert(plan);
+
+        for (Object itemObject : details) {
+            if (!(itemObject instanceof Map<?, ?>)) {
+                continue;
+            }
+            Map<String, Object> item = (Map<String, Object>) itemObject;
+            EnergyPlanDetail detail = new EnergyPlanDetail();
+            detail.setPlanId(plan.getId());
+            detail.setTimestamp(parseDetailTimestamp(item, planStart));
+            detail.setEquipmentId(longValue(item.get("equipment_id"), 1L));
+            detail.setOutput(scale(getDecimalAny(item, BigDecimal.ZERO, "output", "boiler_output", "boilerLoad", "boiler_load"), 6));
+            detail.setElectricityConsumption(scale(getDecimalAny(item, BigDecimal.ZERO, "electricity_consumption", "electricity", "elec"), 6));
+            detail.setSteamConsumption(scale(getDecimalAny(item, BigDecimal.ZERO, "steam_consumption", "steam"), 6));
+            detail.setCarbonEmissionTco2(scale(getDecimalAny(item, BigDecimal.ZERO, "carbon_emission_tco2", "carbon", "co2"), 6));
+            BigDecimal energyCost = getDecimalAny(item, null, "energy_cost", "energyCost");
+            if (energyCost == null) {
+                energyCost = detail.getElectricityConsumption().multiply(priceForHour(detail.getTimestamp().getHour()))
+                        .add(detail.getSteamConsumption().multiply(new BigDecimal("180.00")));
+            }
+            detail.setEnergyCost(scale(energyCost, 2));
+            energyPlanDetailMapper.insert(detail);
+        }
+    }
+
+    private void deleteExistingEnergyPlans(Long scheduleId) {
+        List<EnergyPlan> existingPlans = energyPlanMapper.selectList(
+                new LambdaQueryWrapper<EnergyPlan>()
+                        .eq(EnergyPlan::getSourceScheduleId, scheduleId)
+        );
+        if (existingPlans == null || existingPlans.isEmpty()) {
+            return;
+        }
+        List<Long> planIds = existingPlans.stream()
+                .map(EnergyPlan::getId)
+                .filter(id -> id != null)
+                .toList();
+        if (!planIds.isEmpty()) {
+            energyPlanDetailMapper.delete(
+                    new LambdaQueryWrapper<EnergyPlanDetail>()
+                            .in(EnergyPlanDetail::getPlanId, planIds)
+            );
+        }
+        energyPlanMapper.delete(
+                new LambdaQueryWrapper<EnergyPlan>()
+                        .eq(EnergyPlan::getSourceScheduleId, scheduleId)
+        );
+    }
+
+    private BigDecimal[] calculateAlgorithmEnergyCosts(List<?> details) {
+        BigDecimal electricityCost = BigDecimal.ZERO;
+        BigDecimal steamCost = BigDecimal.ZERO;
+        for (Object itemObject : details) {
+            if (!(itemObject instanceof Map<?, ?>)) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> item = (Map<String, Object>) itemObject;
+            LocalDateTime timestamp = parseDetailTimestamp(item, LocalDateTime.now().withMinute(0).withSecond(0).withNano(0));
+            BigDecimal electricity = getDecimalAny(item, BigDecimal.ZERO, "electricity_consumption", "electricity", "elec");
+            BigDecimal steam = getDecimalAny(item, BigDecimal.ZERO, "steam_consumption", "steam");
+            electricityCost = electricityCost.add(electricity.multiply(priceForHour(timestamp.getHour())));
+            steamCost = steamCost.add(steam.multiply(new BigDecimal("180.00")));
+        }
+        return new BigDecimal[]{electricityCost, steamCost};
+    }
+
+    private LocalDateTime parsePlanStart(Map<String, Object> energyPlanJson, Map<String, Object> dailyPlan) {
+        Object timestamp = energyPlanJson.get("timestamp");
+        if (timestamp == null && dailyPlan != null) {
+            timestamp = dailyPlan.get("timestamp");
+        }
+        if (timestamp != null) {
+            return parseDateTime(timestamp.toString());
+        }
+        Object planDate = energyPlanJson.get("plan_date");
+        if (planDate != null) {
+            return parseDate(planDate.toString(), "plan_date").atStartOfDay();
+        }
+        throw new BusinessException(400, "energy_plan timestamp or plan_date is required");
+    }
+
+    private LocalDateTime parseDetailTimestamp(Map<String, Object> item, LocalDateTime planStart) {
+        Object timestamp = item.get("timestamp");
+        if (timestamp != null) {
+            return parseDateTime(timestamp.toString());
+        }
+        int hour = intValue(item.get("hour"), 0);
+        return planStart.plusHours(hour);
+    }
+
+    private LocalDateTime parseDateTime(String value) {
+        String text = value != null ? value.trim().replace('T', ' ') : "";
+        if (text.length() > 19) {
+            text = text.substring(0, 19);
+        }
+        return LocalDateTime.parse(text, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private BigDecimal priceForHour(int hour) {
+        if ((hour >= 0 && hour < 8) || (hour >= 22 && hour < 24)) {
+            return new BigDecimal("0.35");
+        }
+        if (hour >= 8 && hour < 22) {
+            return new BigDecimal("1.05");
+        }
+        return new BigDecimal("0.65");
+    }
+
+    private int intValue(Object value, int defaultValue) {
+        return value instanceof Number ? ((Number) value).intValue()
+                : value != null ? Integer.parseInt(value.toString()) : defaultValue;
+    }
+
+    private Long longValue(Object value, Long defaultValue) {
+        return value instanceof Number ? ((Number) value).longValue()
+                : value != null ? Long.parseLong(value.toString()) : defaultValue;
+    }
+
+    private String textValue(Map<String, Object> source, String key, String defaultValue) {
+        Object value = source != null ? source.get(key) : null;
+        return value != null && !value.toString().isBlank() ? value.toString() : defaultValue;
     }
 
     @Override
@@ -823,6 +1023,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
 
     private BigDecimal value(BigDecimal value) {
         return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private BigDecimal scale(BigDecimal value, int scale) {
+        return value(value).setScale(scale, RoundingMode.HALF_UP);
     }
 
     private void runAlgorithmTask(Runnable runnable) {

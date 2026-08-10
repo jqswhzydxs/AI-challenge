@@ -44,6 +44,12 @@ public class RealtimeControlController {
         return realtimeControlService.getHistory(query);
     }
 
+    @Operation(summary = "执行一次滚动 MPC", description = "联调用：读取最新能源采集点和日级排产计划，立即生成一条分钟级 MPC 修正指令")
+    @PostMapping("/tick")
+    public Result<RealtimeControlVO> runRealtimeMpcTick() {
+        return realtimeControlService.runRealtimeMpcTick();
+    }
+
     @Operation(summary = "导入实时调控 JSON", description = "联调用：导入算法端返回的 realtime_control JSON，解析后保存到数据库")
     @PostMapping("/import")
     public Result<RealtimeControlImportResultVO> importRealtimeControl(

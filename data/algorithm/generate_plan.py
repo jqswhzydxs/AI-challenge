@@ -527,6 +527,58 @@ def generate_realtime_control(points: Sequence[EnergyPoint],
     }
 
 
+def generate_energy_plan(production: Sequence[float],
+                         optimized_coeff: float,
+                         plan_start: datetime) -> dict:
+    details = []
+    electricity_cost = 0.0
+    steam_cost = 0.0
+    for hour, production_value in enumerate(production):
+        timestamp = plan_start + timedelta(hours=hour)
+        electricity = production_value * optimized_coeff
+        boiler_output = clamp(20.0 + production_value * 60.0, 20.0, 80.0)
+        steam = boiler_output * 0.012 + production_value * 0.18
+        carbon = electricity * 0.00057
+        electricity_price = price_for_hour(hour)
+        hour_electricity_cost = electricity * electricity_price
+        hour_steam_cost = steam * 180.0
+        electricity_cost += hour_electricity_cost
+        steam_cost += hour_steam_cost
+        details.append({
+            "hour": hour,
+            "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "equipment_id": 1,
+            "boiler_output": boiler_output,
+            "turbine_output": clamp(8.0 + production_value * 0.5, 5.0, 30.0),
+            "grid_purchase": max(0.0, electricity - boiler_output * 0.35),
+            "electricity_consumption": electricity,
+            "steam_consumption": steam,
+            "carbon_emission_tco2": carbon,
+            "energy_cost": hour_electricity_cost + hour_steam_cost,
+        })
+
+    return {
+        "timestamp": plan_start.strftime("%Y-%m-%d %H:%M:%S"),
+        "plan_date": plan_start.strftime("%Y-%m-%d"),
+        "source": "algorithm_milp_energy_plan",
+        "objective": "cost_energy_carbon_executability",
+        "electric_price_mode": "PEAK_VALLEY",
+        "time_interval": 60,
+        "electricity_cost": electricity_cost,
+        "steam_cost": steam_cost,
+        "total_energy_cost": electricity_cost + steam_cost,
+        "details": details,
+    }
+
+
+def price_for_hour(hour: int) -> float:
+    if 0 <= hour < 8 or 22 <= hour < 24:
+        return 0.35
+    if 8 <= hour < 22:
+        return 1.05
+    return 0.65
+
+
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
@@ -589,11 +641,13 @@ def build_result(input_file: Path, orders_file: Path | None = None) -> dict:
             for hour in range(24)
         ],
     }
+    energy_plan = generate_energy_plan(production, optimized_coeff, generated_at)
     realtime_control = generate_realtime_control(points, production, generated_at)
     print(f"ER: {realtime_control['performance']['ER']:.2f}%")
 
     return {
         "daily_plan": daily_plan,
+        "energy_plan": energy_plan,
         "realtime_control": realtime_control,
     }
 

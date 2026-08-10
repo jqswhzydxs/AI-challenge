@@ -65,7 +65,16 @@ algorithm:
 # Disable with MOCK_DEVICE_ENABLED=false when a real collector posts to /api/energy/realtime/push.
 mock-device:
   enabled: ${MOCK_DEVICE_ENABLED:true}
+  mode: ${MOCK_DEVICE_MODE:replay}
+  replay-file: ${MOCK_DEVICE_REPLAY_FILE:data/algorithm/steel_data_cleaned.csv}
   interval-ms: ${MOCK_DEVICE_INTERVAL_MS:60000}
   initial-delay-ms: ${MOCK_DEVICE_INITIAL_DELAY_MS:5000}
   backfill-on-startup: ${MOCK_DEVICE_BACKFILL_ON_STARTUP:true}
   backfill-days: ${MOCK_DEVICE_BACKFILL_DAYS:7}
+
+# Rolling MPC loop. It reads the latest collected energy point and the active day plan,
+# then writes a minute-level correction command to mpc_realtime_control.
+realtime-mpc:
+  enabled: ${REALTIME_MPC_ENABLED:true}
+  interval-ms: ${REALTIME_MPC_INTERVAL_MS:60000}
+  initial-delay-ms: ${REALTIME_MPC_INITIAL_DELAY_MS:12000}
