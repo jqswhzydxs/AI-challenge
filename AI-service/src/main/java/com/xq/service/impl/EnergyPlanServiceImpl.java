@@ -9,6 +9,7 @@ import com.xq.mapper.AlgorithmTaskMapper;
 import com.xq.mapper.EnergyEquipmentMapper;
 import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.EvaluationMetricMapper;
+import com.xq.mapper.MpcRealtimeControlMapper;
 import com.xq.mapper.ProductionScheduleDetailMapper;
 import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.mapper.ReportStatisticMapper;
@@ -18,6 +19,7 @@ import com.xq.model.entity.AlgorithmTask;
 import com.xq.model.entity.EnergyEquipment;
 import com.xq.model.entity.EnergyRealtimeData;
 import com.xq.model.entity.EvaluationMetric;
+import com.xq.model.entity.MpcRealtimeControl;
 import com.xq.model.entity.ProductionScheduleDetail;
 import com.xq.model.entity.ProductionSchedulePlan;
 import com.xq.model.entity.ReportStatistic;
@@ -87,6 +89,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     private final ProductionScheduleDetailMapper scheduleDetailMapper;
     private final ReportStatisticMapper reportStatisticMapper;
     private final EvaluationMetricMapper evaluationMetricMapper;
+    private final MpcRealtimeControlMapper mpcRealtimeControlMapper;
     private TaskExecutor algorithmTaskExecutor;
 
     @Autowired(required = false)
@@ -437,9 +440,15 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         List<EnergyEquipment> equipments = energyEquipmentMapper.selectList(
                 new LambdaQueryWrapper<EnergyEquipment>().orderByAsc(EnergyEquipment::getId)
         );
+        // 设备当前出力改读 MPC 最新一条滚动调控指令（每分钟更新），
+        // 不再读静态能源方案明细 energy_plan_detail：其 equipment_id 与设备表对不上且非实时。
+        MpcRealtimeControl latestMpc = mpcRealtimeControlMapper.selectOne(
+                new LambdaQueryWrapper<MpcRealtimeControl>()
+                        .orderByDesc(MpcRealtimeControl::getId)
+                        .last("LIMIT 1")
+        );
         List<EnergyDeviceStatusVO> records = equipments.stream().map(equipment -> {
-            EnergyPlanDetail latest = latestDetailForEquipment(equipment.getId());
-            BigDecimal currentOutput = latest != null ? value(latest.getOutput()) : BigDecimal.ZERO;
+            BigDecimal currentOutput = latestMpc != null ? mpcOutputForEquipment(equipment, latestMpc) : BigDecimal.ZERO;
             BigDecimal maxOutput = value(equipment.getMaxOutput());
             BigDecimal loadRate = percent(currentOutput, maxOutput);
             return EnergyDeviceStatusVO.builder()
@@ -456,6 +465,27 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                     .build();
         }).collect(Collectors.toList());
         return Result.ok(records);
+    }
+
+    /**
+     * 按 equipmentCode 将 MPC 最新指令映射为设备当前出力.
+     * BOILER → boilerLoadMw, TURBINE → turbineOutputMw, GRID → gridPurchaseKwh.
+     */
+    private BigDecimal mpcOutputForEquipment(EnergyEquipment equipment, MpcRealtimeControl mpc) {
+        String code = equipment.getEquipmentCode();
+        if (code == null) {
+            return BigDecimal.ZERO;
+        }
+        if (code.contains("BOILER")) {
+            return value(mpc.getBoilerLoadMw());
+        }
+        if (code.contains("TURBINE")) {
+            return value(mpc.getTurbineOutputMw());
+        }
+        if (code.contains("GRID")) {
+            return value(mpc.getGridPurchaseKwh());
+        }
+        return BigDecimal.ZERO;
     }
 
     @Override

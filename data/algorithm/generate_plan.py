@@ -244,7 +244,12 @@ def read_orders(path: Path) -> tuple[List[ProductionOrder], List[float], datetim
         if order.due_time.date() != plan_date:
             continue
         due_hour = min(max(order.due_time.hour, 0), 23)
-        demand[due_hour] += order.planned_quantity
+        # 把订单需求按小时均分到 [0, due_hour] 区间，避免单点堆叠在交期小时。
+        # 语义：交期前就要开始生产，需求按交期前时段分散；交期 23:59 → 全天 24 小时均分。
+        spread_hours = due_hour + 1  # 0..due_hour 共 due_hour+1 个小时
+        per_hour = order.planned_quantity / spread_hours
+        for h in range(spread_hours):
+            demand[h] += per_hour
 
     return orders, demand, datetime.combine(plan_date, datetime.min.time())
 
@@ -384,14 +389,44 @@ def generate_demand(elec_hourly: Sequence[float]) -> List[float]:
     return [max(base_demand * (0.7 + 0.6 * rng.random()), base_demand * 0.4) for _ in range(24)]
 
 
+def distribute_production(total: float) -> List[float]:
+    """超容量/低容量 fallback 时把总产量按电价谷段优先分散到 24 小时.
+
+    背景：当 demand 来自单条订单（交期统一 23:59:59）时，demand 会单点堆叠在
+    due_hour，原 fallback 直接 return list(demand) 会导致 production 全堆在一个
+    小时。本函数按峰谷电价模型把 total 分散到全天：
+      - 谷段 (0-8, 22-24 共 10 小时, 电价 0.35 元) 排 60%
+      - 平段 (8-22 共 14 小时, 电价 1.05 元) 排 40%
+    这样任何量级的 total 都会均匀分散，避免单点堆叠，且电价谷段多产降低成本。
+    """
+    valley_hours = [h for h in range(24) if h < 8 or h >= 22]
+    peak_hours = [h for h in range(24) if 8 <= h < 22]
+    valley_share = 0.60
+    peak_share = 0.40
+    valley_per_hour = total * valley_share / len(valley_hours)
+    peak_per_hour = total * peak_share / len(peak_hours)
+    production = [0.0] * 24
+    for h in valley_hours:
+        production[h] = valley_per_hour
+    for h in peak_hours:
+        production[h] = peak_per_hour
+    # 修正浮点误差，确保 sum(production) == total
+    drift = total - sum(production)
+    if abs(drift) > 1e-9:
+        production[valley_hours[0]] += drift
+    return production
+
+
 def solve_schedule(demand: Sequence[float]) -> tuple[List[float], List[int], str]:
     total = sum(demand)
     min_total = 24 * MIN_PRODUCTION
     max_total = min_total + MAX_HEAT_HOURS * HEAT_EXTRA_CAPACITY
 
     if total < min_total or total > max_total:
-        heat_hours = choose_heat_hours(demand, MIN_HEAT_HOURS)
-        return list(demand), [1 if i in heat_hours else 0 for i in range(24)], "fallback"
+        # fallback：超容量或低容量时，按电价谷段优先分散总产量，避免单点堆叠
+        production = distribute_production(total)
+        heat_hours = choose_heat_hours(production, MIN_HEAT_HOURS)
+        return production, [1 if i in heat_hours else 0 for i in range(24)], "fallback"
 
     extra_needed = total - min_total
     heat_count = max(MIN_HEAT_HOURS, min(MAX_HEAT_HOURS, math.ceil(extra_needed / HEAT_EXTRA_CAPACITY)))

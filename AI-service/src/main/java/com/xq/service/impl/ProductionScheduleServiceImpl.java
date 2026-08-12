@@ -27,7 +27,10 @@ import com.xq.model.vo.TaskVO;
 import com.xq.service.ProductionScheduleService;
 import com.xq.service.RealtimeControlService;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -71,6 +74,8 @@ import org.springframework.core.task.TaskExecutor;
 @Service
 @RequiredArgsConstructor
 public class ProductionScheduleServiceImpl implements ProductionScheduleService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProductionScheduleServiceImpl.class);
 
     private static final BigDecimal ALGORITHM_EC_BASELINE = new BigDecimal("14.00");
     private static final BigDecimal ALGORITHM_EC_OPTIMIZED = new BigDecimal("13.2785");
@@ -188,7 +193,60 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (dto.getPlannedQuantity() == null || dto.getPlannedQuantity().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException(400, "plannedQuantity 必须填写为正数，前端只需录入次日订单产量");
         }
+        // 订单表即排产预约表：先建订单记录未来生产需求
         ensureSimpleOrder(scheduleDate, dto);
+
+        LocalDate today = LocalDate.now();
+        if (scheduleDate.isAfter(today)) {
+            // 未来日期：只预约不生成，等待到期后由 autoGeneratePendingSchedules 定时任务自动生成
+            AlgorithmTask task = new AlgorithmTask();
+            task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
+            task.setStatus(TaskStatus.PENDING);
+            task.setProgress(0);
+            task.setMessage("排产已预约，等待 " + scheduleDate + " 到期后自动生成方案");
+            task.setRetryCount(0);
+            Map<String, Object> frontendRequest = new LinkedHashMap<>();
+            frontendRequest.put("source", "order_reservation");
+            frontendRequest.put("scheduleDate", scheduleDate.toString());
+            frontendRequest.put("plannedQuantity", dto.getPlannedQuantity());
+            frontendRequest.put("reservation", true);
+            frontendRequest.put("autoGenerateAfter", scheduleDate.toString());
+            task.setFrontendRequestJson(JSON.toJSONString(frontendRequest));
+            task.setStartTime(LocalDateTime.now());
+            algorithmTaskMapper.insert(task);
+            log.info("排产已预约 scheduleDate={} plannedQuantity={} taskId={}，到期后自动生成",
+                    scheduleDate, dto.getPlannedQuantity(), task.getId());
+            return Result.ok("排产已预约，将在 " + scheduleDate + " 到期后自动生成方案", toTaskVO(task));
+        }
+
+        // 已到期（今天/过去）：立即生成排产方案
+        return generateScheduleForDate(scheduleDate);
+    }
+
+    /**
+     * 为指定日期生成排产方案（幂等：已有成功方案则跳过）.
+     * <p>
+     * 供 {@link #generateFromCollectedData} 到期立即生成和 {@link #autoGeneratePendingSchedules} 定时扫描调用。
+     * </p>
+     */
+    private Result<TaskVO> generateScheduleForDate(LocalDate scheduleDate) {
+        // 幂等：已有成功的排产方案则跳过
+        Long existingCount = schedulePlanMapper.selectCount(
+                new LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .eq(ProductionSchedulePlan::getScheduleDate, scheduleDate)
+                        .eq(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+        );
+        if (existingCount != null && existingCount > 0) {
+            log.info("日期 {} 已有成功的排产方案，跳过生成", scheduleDate);
+            throw new BusinessException(409, "日期 " + scheduleDate + " 已有排产方案，无需重复生成");
+        }
+
+        List<ProductionOrder> orders = selectOrdersForScheduleDate(scheduleDate);
+        if (orders.isEmpty()) {
+            log.info("日期 {} 无待排产订单，跳过生成", scheduleDate);
+            throw new BusinessException(400, "日期 " + scheduleDate + " 无待排产订单");
+        }
+
         List<EnergyRealtimeData> energyRows = selectEnergyRowsForAlgorithm(algorithmTrainingDays);
         byte[] inputBytes = buildEnergyCsv(energyRows).getBytes(StandardCharsets.UTF_8);
 
@@ -205,9 +263,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         Map<String, Object> frontendRequest = new LinkedHashMap<>();
         frontendRequest.put("source", "energy_realtime_data");
         frontendRequest.put("scheduleDate", scheduleDate.toString());
-        frontendRequest.put("plannedQuantity", dto.getPlannedQuantity());
         frontendRequest.put("trainingDays", algorithmTrainingDays);
         frontendRequest.put("trainingRecordCount", energyRows.size());
+        frontendRequest.put("orderCount", orders.size());
         task.setFrontendRequestJson(JSON.toJSONString(frontendRequest));
         task.setStartTime(LocalDateTime.now());
         algorithmTaskMapper.insert(task);
@@ -215,6 +273,42 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         runAlgorithmTask(() -> runExternalScheduleTask(task, inputBytes, "collected_energy_realtime_data.csv", scheduleDate));
 
         return Result.ok("已使用采集能源数据创建算法任务", toTaskVO(task));
+    }
+
+    /**
+     * 定时扫描到期/过期的待排产订单，自动生成排产方案.
+     * <p>
+     * 订单表即排产预约表。本任务每 30 分钟扫描一次，查找 dueTime <= 今天 且 status != COMPLETED 的订单，
+     * 按到期日期分组，对每个尚无成功排产方案的日期触发自动生成。
+     * </p>
+     */
+    @Scheduled(fixedDelayString = "${schedule.auto-generate.interval-ms:1800000}",
+            initialDelayString = "${schedule.auto-generate.initial-delay-ms:60000}")
+    public void autoGeneratePendingSchedules() {
+        LocalDate today = LocalDate.now();
+        List<ProductionOrder> pendingOrders = productionOrderMapper.selectList(
+                new LambdaQueryWrapper<ProductionOrder>()
+                        .le(ProductionOrder::getDueTime, today.atTime(23, 59, 59))
+                        .ne(ProductionOrder::getStatus, "COMPLETED")
+        );
+        if (pendingOrders.isEmpty()) {
+            return;
+        }
+        Set<LocalDate> dueDates = new LinkedHashSet<>();
+        for (ProductionOrder order : pendingOrders) {
+            if (order.getDueTime() != null) {
+                dueDates.add(order.getDueTime().toLocalDate());
+            }
+        }
+        log.info("定时扫描：发现 {} 个到期/过期日期待检查排产方案生成", dueDates.size());
+        for (LocalDate dueDate : dueDates) {
+            try {
+                generateScheduleForDate(dueDate);
+                log.info("已触发 {} 排产方案自动生成", dueDate);
+            } catch (RuntimeException e) {
+                log.info("跳过 {} 排产方案自动生成: {}", dueDate, e.getMessage());
+            }
+        }
     }
 
     @Override
@@ -422,21 +516,14 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 }
             }
 
-            String realtimeImportWarning = null;
-            Object realtimeControl = root.get("realtime_control");
-            if (realtimeControl != null && realtimeControlService != null) {
-                phase = "导入实时调控结果";
-                try {
-                    realtimeControlService.importRealtimeControl(realtimeControl, extractPlanDate(dailyPlan), "output.json");
-                } catch (RuntimeException realtimeException) {
-                    realtimeImportWarning = trimMessage(realtimeException.getMessage());
-                }
-            }
-
+            // 算法生成的 realtime_control 是一次性模拟快照，不应入库到 mpc_realtime_control 表。
+            // 原因：其 timestamp 由 generate_plan.py 拼接为「计划日 + 当前时分秒」，
+            // 若计划日为次日，control_date 会落在未来，污染滚动 MPC 的实时数据
+            // （getLatest 按 control_date DESC 排序会把这条未来记录永远排在最前）。
+            // 该数据已随 outputJson 存入 algorithm_task.algorithm_response_json 供查阅，
+            // 真实控制指令只应来自 RealtimeMpcControlTask 每分钟的滚动计算。
             task.setAlgorithmResponseJson(outputJson);
-            markTaskSuccess(task, scheduleId, realtimeImportWarning == null
-                    ? "算法方案已生成并入库"
-                    : "排产方案已生成并入库；实时调控结果入库失败: " + realtimeImportWarning);
+            markTaskSuccess(task, scheduleId, "算法方案已生成并入库");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             RuntimeException wrapped = new BusinessException(500, "算法执行被中断，阶段: " + phase);

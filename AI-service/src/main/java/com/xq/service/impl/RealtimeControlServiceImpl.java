@@ -22,6 +22,8 @@ import com.xq.model.vo.RealtimeControlImportResultVO;
 import com.xq.model.vo.RealtimeControlVO;
 import com.xq.service.RealtimeControlService;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +49,8 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class RealtimeControlServiceImpl implements RealtimeControlService {
+
+    private static final Logger log = LoggerFactory.getLogger(RealtimeControlServiceImpl.class);
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("H:mm:ss");
     private static final BigDecimal BOILER_MIN_LOAD_MW = new BigDecimal("20.00");
@@ -112,13 +116,17 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
                 .divide(new BigDecimal("60"), 6, RoundingMode.HALF_UP);
         BigDecimal actualElec = value(latestEnergy.getElectricityConsumption());
         BigDecimal actualSteam = value(latestEnergy.getSteamConsumption());
-        BigDecimal elecDeviationRate = percentDeviation(actualElec, plannedElecPerMinute);
+        BigDecimal elecDeviationRate = clampDeviation(percentDeviation(actualElec, plannedElecPerMinute));
         BigDecimal steamPlan = plannedElecPerMinute.multiply(new BigDecimal("0.0052")).add(new BigDecimal("0.8"));
-        BigDecimal steamDeviationRate = percentDeviation(actualSteam, steamPlan);
+        BigDecimal steamDeviationRate = clampDeviation(percentDeviation(actualSteam, steamPlan));
 
-        BigDecimal production = value(detail.getProduction());
-        BigDecimal boilerBase = new BigDecimal("24.00").add(production.multiply(new BigDecimal("2.10")));
-        BigDecimal turbineBase = new BigDecimal("8.00").add(production.multiply(new BigDecimal("0.45")));
+        // 锅炉/汽机目标出力改为基于实时电量(actualElec)浮动。
+        // 原 24+production×2.10 依赖排产 production(0.15-0.95，基线 fallback=100)，
+        // 且 elecDeviationRate 因 elec_forecast(1.99) 与 actualElec(2.95/分钟) 量级不匹配常达数千%，
+        // 使 elecCorrection 爆炸把 boilerTarget 推到上限被 clamp 钉死。
+        // 现基于 actualElec(分钟 kWh，量级稳定) 并 clamp 偏差率，保证落在出力区间内浮动。
+        BigDecimal boilerBase = new BigDecimal("30.00").add(actualElec.multiply(new BigDecimal("8.00")));
+        BigDecimal turbineBase = new BigDecimal("10.00").add(actualElec.multiply(new BigDecimal("3.00")));
         BigDecimal elecCorrection = elecDeviationRate.multiply(new BigDecimal("0.12"));
         BigDecimal steamCorrection = steamDeviationRate.multiply(new BigDecimal("0.08"));
 
@@ -136,8 +144,14 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
         control.setRawTimestamp(latestEnergy.getTimestamp().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
         control.setBoilerLoadMw(clamp(boilerTarget, BOILER_MIN_LOAD_MW, BOILER_MAX_LOAD_MW));
         control.setTurbineOutputMw(clamp(turbineTarget, TURBINE_MIN_OUTPUT_MW, TURBINE_MAX_OUTPUT_MW));
-        control.setGridPurchaseKwh(actualElec.subtract(control.getTurbineOutputMw().multiply(new BigDecimal("0.50"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
-        control.setPowerFactorTarget(new BigDecimal("0.950000"));
+        // 外购电 = 厂用电功率(actualElec×60, kWh/分钟→kW) − 汽机自发电抵消(turbineOutput MW→kW, 仅 5‰ 抵消厂用电)
+        // 原公式 actualElec − turbine×0.50 单位不匹配(分钟kWh vs MW)恒为负被 max(0) 钳死，现修正为正值浮动。
+        control.setGridPurchaseKwh(actualElec.multiply(new BigDecimal("60"))
+                .subtract(control.getTurbineOutputMw().multiply(new BigDecimal("1000")).multiply(new BigDecimal("0.005")))
+                .max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
+        // 功率因数目标随用电偏差微调(±0.05)，避免恒定 0.95；clamp 到 0.90-0.99
+        BigDecimal powerFactorTarget = new BigDecimal("0.95").add(elecDeviationRate.multiply(new BigDecimal("0.0005")));
+        control.setPowerFactorTarget(clamp(powerFactorTarget, new BigDecimal("0.90"), new BigDecimal("0.99")));
         control.setElecNext5minKwh(actualElec.multiply(new BigDecimal("5")).add(elecDeviationRate.multiply(new BigDecimal("0.02"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
         control.setSteamNext5minT(actualSteam.multiply(new BigDecimal("5")).add(steamDeviationRate.multiply(new BigDecimal("0.01"))).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP));
         control.setSourceFileName("realtime_mpc_tick");
@@ -191,8 +205,10 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
 
     private ProductionSchedulePlan selectPlanForMpc(LocalDate controlDate) {
         if (productionSchedulePlanMapper == null) {
-            throw new BusinessException(500, "排产方案 Mapper 未初始化，无法执行滚动 MPC");
+            log.warn("排产方案 Mapper 未初始化，滚动 MPC 使用默认基线运行");
+            return defaultBaselinePlan(controlDate);
         }
+        // 1. 优先取当天的排产方案
         ProductionSchedulePlan sameDay = productionSchedulePlanMapper.selectOne(
                 new LambdaQueryWrapper<ProductionSchedulePlan>()
                         .eq(ProductionSchedulePlan::getScheduleDate, controlDate)
@@ -203,26 +219,57 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
         if (sameDay != null) {
             return sameDay;
         }
-        ProductionSchedulePlan latest = productionSchedulePlanMapper.selectOne(
+        // 2. 当天没有则取「当前生效的计划」：schedule_date <= 今天 且 SUCCESS 里 schedule_date 最大的
+        //    语义：用不超过今天的、最近一份排产方案来滚动调控，避免误用「次日排产方案」调今天设备
+        ProductionSchedulePlan active = productionSchedulePlanMapper.selectOne(
                 new LambdaQueryWrapper<ProductionSchedulePlan>()
+                        .le(ProductionSchedulePlan::getScheduleDate, controlDate)
                         .eq(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+                        .orderByDesc(ProductionSchedulePlan::getScheduleDate)
                         .orderByDesc(ProductionSchedulePlan::getCreateTime)
                         .last("LIMIT 1")
         );
-        if (latest == null) {
-            throw new BusinessException(404, "暂无成功的日级排产方案，无法执行滚动 MPC");
+        if (active != null) {
+            return active;
         }
-        return latest;
+        // 3. 任何方案都没有时（如首次启动），用内置默认基线，避免 MPC 停摆
+        log.warn("未找到 schedule_date <= {} 的成功排产方案，滚动 MPC 使用默认基线运行", controlDate);
+        return defaultBaselinePlan(controlDate);
+    }
+
+    /**
+     * 构造内存中的默认基线排产方案（不入库）.
+     * <p>
+     * 用于系统首次启动或无任何排产方案时，保证 MPC 滚动调控不中断。
+     * production=100 t/h、EC=14.00 kWh/t 与算法 BASE_ELEC_COEFF / MIN_PRODUCTION 对齐。
+     * </p>
+     */
+    private ProductionSchedulePlan defaultBaselinePlan(LocalDate controlDate) {
+        ProductionSchedulePlan plan = new ProductionSchedulePlan();
+        plan.setId(-1L);
+        plan.setScheduleDate(controlDate);
+        plan.setScheduleName("默认基线方案（无排产方案时使用）");
+        plan.setPlanStartTime(controlDate.atStartOfDay());
+        plan.setPlanHorizon(24);
+        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setElecCoefficient(new BigDecimal("14.00"));
+        return plan;
     }
 
     private ProductionScheduleDetail selectDetailForMpc(ProductionSchedulePlan plan, int hour) {
+        int safeHour = Math.min(Math.max(hour, 0), 23);
+        // 默认基线方案（id=-1）不入库，直接构造内存明细
+        if (plan.getId() == null || plan.getId() < 0) {
+            return defaultBaselineDetail(plan, safeHour);
+        }
         if (productionScheduleDetailMapper == null) {
-            throw new BusinessException(500, "排产明细 Mapper 未初始化，无法执行滚动 MPC");
+            log.warn("排产明细 Mapper 未初始化，滚动 MPC 使用默认基线明细");
+            return defaultBaselineDetail(plan, safeHour);
         }
         ProductionScheduleDetail detail = productionScheduleDetailMapper.selectOne(
                 new LambdaQueryWrapper<ProductionScheduleDetail>()
                         .eq(ProductionScheduleDetail::getScheduleId, plan.getId())
-                        .eq(ProductionScheduleDetail::getHourIndex, hour)
+                        .eq(ProductionScheduleDetail::getHourIndex, safeHour)
                         .last("LIMIT 1")
         );
         if (detail != null) {
@@ -235,8 +282,33 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
                         .last("LIMIT 1")
         );
         if (detail == null) {
-            throw new BusinessException(404, "排产方案缺少小时明细，无法执行滚动 MPC");
+            log.warn("排产方案 {} 缺少小时明细，滚动 MPC 使用默认基线明细", plan.getId());
+            return defaultBaselineDetail(plan, safeHour);
         }
+        return detail;
+    }
+
+    /**
+     * 构造内存中的默认基线小时明细（不入库）.
+     * production=100 t/h、elecForecast=production*EC，与算法 MIN_PRODUCTION 对齐。
+     */
+    private ProductionScheduleDetail defaultBaselineDetail(ProductionSchedulePlan plan, int hour) {
+        ProductionScheduleDetail detail = new ProductionScheduleDetail();
+        detail.setId(-1L);
+        detail.setScheduleId(plan.getId());
+        detail.setHourIndex(hour);
+        LocalDateTime start = plan.getPlanStartTime() != null
+                ? plan.getPlanStartTime().plusHours(hour)
+                : plan.getScheduleDate().atStartOfDay().plusHours(hour);
+        detail.setStartTime(start);
+        detail.setEndTime(start.plusHours(1));
+        BigDecimal production = new BigDecimal("100.00");
+        detail.setProduction(production);
+        detail.setDemand(production);
+        BigDecimal ec = plan.getElecCoefficient() != null
+                ? plan.getElecCoefficient()
+                : new BigDecimal("14.00");
+        detail.setElecForecast(production.multiply(ec));
         return detail;
     }
 
@@ -257,6 +329,22 @@ public class RealtimeControlServiceImpl implements RealtimeControlService {
         return actual.subtract(planned)
                 .multiply(new BigDecimal("100"))
                 .divide(planned.abs(), 6, RoundingMode.HALF_UP);
+    }
+
+    /** 将偏差率限制在 ±100%，避免 elec_forecast 与 actualElec 量级不匹配时偏差爆炸把修正项推飞。 */
+    private BigDecimal clampDeviation(BigDecimal rate) {
+        if (rate == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal lower = new BigDecimal("-100");
+        BigDecimal upper = new BigDecimal("100");
+        if (rate.compareTo(lower) < 0) {
+            return lower;
+        }
+        if (rate.compareTo(upper) > 0) {
+            return upper;
+        }
+        return rate;
     }
 
     private BigDecimal applyRamp(BigDecimal previous, BigDecimal target, BigDecimal maxStep) {

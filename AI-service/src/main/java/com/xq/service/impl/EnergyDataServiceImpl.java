@@ -46,6 +46,7 @@ public class EnergyDataServiceImpl implements EnergyDataService {
 
     private final EnergyRealtimeDataMapper energyRealtimeDataMapper;
     private volatile List<ReplayPoint> replayPoints;
+    private volatile Integer replayStartDayOfYear;
 
     @Value("${mock-device.mode:replay}")
     private String mockDeviceMode;
@@ -70,10 +71,13 @@ public class EnergyDataServiceImpl implements EnergyDataService {
         if (hasText(endTime)) {
             wrapper.le(EnergyRealtimeData::getTimestamp, endTime);
         }
-        wrapper.orderByAsc(EnergyRealtimeData::getTimestamp);
+        // 按时间降序取最新 N 条（默认 50），再反转为升序返回。
+        // 原升序分页会返回时间窗口内最老的 N 条，导致前端"实时"展示的其实是 N 分钟前的旧数据。
+        wrapper.orderByDesc(EnergyRealtimeData::getTimestamp);
 
         Page<EnergyRealtimeData> page = energyRealtimeDataMapper.selectPage(new Page<>(pageNum, pageSize), wrapper);
         List<EnergyRealtimeData> list = page.getRecords();
+        java.util.Collections.reverse(list);
         List<RealtimeDataPointVO> points = list.stream().map(d -> RealtimeDataPointVO.builder()
                 .timestamp(d.getTimestamp() != null ? d.getTimestamp().toString() : null)
                 .electricityConsumption(d.getElectricityConsumption())
@@ -221,8 +225,16 @@ public class EnergyDataServiceImpl implements EnergyDataService {
         if (points.isEmpty()) {
             return null;
         }
-        long minuteIndex = timestamp.toEpochSecond(ZoneOffset.ofHours(8)) / 60;
-        ReplayPoint point = points.get(Math.floorMod(minuteIndex, points.size()));
+        // 按当前日期在 CSV 中定位对应数据：用 dayOfYear + minuteOfDay 计算行号，
+        // 偏移到 CSV 起始日期。这样 8 月 12 日回放的就是 CSV 中 8 月 12 日的数据。
+        int dayOfYear = timestamp.getDayOfYear();
+        int minuteOfDay = timestamp.getHour() * 60 + timestamp.getMinute();
+        int startDay = replayStartDayOfYear != null && replayStartDayOfYear >= 1 ? replayStartDayOfYear : 1;
+        int row = (dayOfYear - startDay) * 1440 + minuteOfDay;
+        // 限制在第一年范围内（525600 分钟 = 365 天），跨年回绕
+        int oneYearRows = Math.min(points.size(), 525600);
+        row = Math.floorMod(row, oneYearRows);
+        ReplayPoint point = points.get(row);
 
         EnergyRealtimePushDTO dto = new EnergyRealtimePushDTO();
         dto.setTimestamp(timestamp.format(NORMAL_TIME_FORMATTER));
@@ -266,11 +278,17 @@ public class EnergyDataServiceImpl implements EnergyDataService {
             }
             Map<String, Integer> header = replayHeader(headerLine);
             String line;
+            boolean firstValid = true;
             while ((line = reader.readLine()) != null) {
                 String[] values = line.split(",", -1);
                 BigDecimal electricity = csvDecimal(values, header, "elec", "usage_kwh", "power", "power_kw");
                 if (electricity == null || electricity.compareTo(BigDecimal.ZERO) <= 0) {
                     continue;
+                }
+                if (firstValid) {
+                    String ts = csvText(values, header, "timestamp");
+                    replayStartDayOfYear = parseDayOfYearFromTimestamp(ts);
+                    firstValid = false;
                 }
                 ReplayPoint point = new ReplayPoint();
                 point.electricity = electricity;
@@ -289,6 +307,25 @@ public class EnergyDataServiceImpl implements EnergyDataService {
             return List.of();
         }
         return points;
+    }
+
+    /** 解析 CSV timestamp 列，返回一年中的第几天（1-366），用于按日期定位回放行。 */
+    private int parseDayOfYearFromTimestamp(String ts) {
+        if (ts == null || ts.isBlank()) return 1;
+        try {
+            ts = ts.trim();
+            LocalDateTime ldt;
+            if (ts.contains("-")) {
+                ldt = LocalDateTime.parse(ts, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            } else if (ts.contains("/")) {
+                ldt = LocalDateTime.parse(ts, DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"));
+            } else {
+                return 1;
+            }
+            return ldt.getDayOfYear();
+        } catch (DateTimeParseException e) {
+            return 1;
+        }
     }
 
     private Map<String, Integer> replayHeader(String headerLine) {

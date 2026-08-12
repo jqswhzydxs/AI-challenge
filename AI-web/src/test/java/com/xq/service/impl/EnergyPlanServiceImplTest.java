@@ -7,6 +7,7 @@ import com.xq.mapper.EnergyPlanDetailMapper;
 import com.xq.mapper.EnergyPlanMapper;
 import com.xq.mapper.EnergyRealtimeDataMapper;
 import com.xq.mapper.EvaluationMetricMapper;
+import com.xq.mapper.MpcRealtimeControlMapper;
 import com.xq.mapper.ProductionScheduleDetailMapper;
 import com.xq.mapper.ProductionSchedulePlanMapper;
 import com.xq.mapper.ReportStatisticMapper;
@@ -51,6 +52,7 @@ class EnergyPlanServiceImplTest {
         ProductionScheduleDetailMapper scheduleDetailMapper = mock(ProductionScheduleDetailMapper.class);
         ReportStatisticMapper reportStatisticMapper = mock(ReportStatisticMapper.class);
         EvaluationMetricMapper evaluationMetricMapper = mock(EvaluationMetricMapper.class);
+        MpcRealtimeControlMapper mpcRealtimeControlMapper = mock(MpcRealtimeControlMapper.class);
         EnergyPlanServiceImpl service = new EnergyPlanServiceImpl(
                 algorithmTaskMapper,
                 energyPlanMapper,
@@ -60,7 +62,8 @@ class EnergyPlanServiceImplTest {
                 schedulePlanMapper,
                 scheduleDetailMapper,
                 reportStatisticMapper,
-                evaluationMetricMapper
+                evaluationMetricMapper,
+                mpcRealtimeControlMapper
         );
 
         EnergyPlan plan = new EnergyPlan();
@@ -246,7 +249,8 @@ class EnergyPlanServiceImplTest {
                 mock(ProductionSchedulePlanMapper.class),
                 mock(ProductionScheduleDetailMapper.class),
                 reportStatisticMapper,
-                evaluationMetricMapper
+                evaluationMetricMapper,
+                mock(MpcRealtimeControlMapper.class)
         );
     }
 
