@@ -38,12 +38,16 @@ import com.xq.model.vo.TaskVO;
 import com.xq.service.EnergyPlanService;
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.task.TaskExecutor;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.xq.model.vo.EnergyPlanVO;
@@ -74,6 +78,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class EnergyPlanServiceImpl implements EnergyPlanService {
 
+    private static final Logger log = LoggerFactory.getLogger(EnergyPlanServiceImpl.class);
+
     private static final BigDecimal VALLEY_PRICE = new BigDecimal("0.35");
     private static final BigDecimal FLAT_PRICE = new BigDecimal("0.65");
     private static final BigDecimal PEAK_PRICE = new BigDecimal("1.05");
@@ -95,6 +101,42 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     @Autowired(required = false)
     public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
         this.algorithmTaskExecutor = algorithmTaskExecutor;
+    }
+
+    /**
+     * 每天凌晨 1 点扫描，把方案日期早于今天的非已完成能源方案标记为已完成。
+     */
+    @Scheduled(cron = "${energy-plan.auto-complete.cron:0 0 1 * * ?}")
+    public void autoMarkPastEnergyPlansCompleted() {
+        LocalDate today = LocalDate.now();
+        int rows = energyPlanMapper.update(null,
+                new LambdaUpdateWrapper<EnergyPlan>()
+                        .lt(EnergyPlan::getPlanDate, today)
+                        .ne(EnergyPlan::getStatus, TaskStatus.SUCCESS)
+                        .set(EnergyPlan::getStatus, TaskStatus.SUCCESS)
+        );
+        if (rows > 0) {
+            log.info("已将 {} 条历史能源方案标记为已完成", rows);
+        }
+    }
+
+    /**
+     * 查询兜底：历史能源方案（日期早于今天）应为已完成；今天及未来不应为已完成。
+     */
+    private void ensureEnergyPlanStatusCorrect(EnergyPlan plan) {
+        if (plan == null || plan.getPlanDate() == null) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        if (plan.getPlanDate().isBefore(today)
+                && !TaskStatus.SUCCESS.equals(plan.getStatus())) {
+            plan.setStatus(TaskStatus.SUCCESS);
+            energyPlanMapper.updateById(plan);
+        } else if (!plan.getPlanDate().isBefore(today)
+                && TaskStatus.SUCCESS.equals(plan.getStatus())) {
+            plan.setStatus(TaskStatus.RUNNING);
+            energyPlanMapper.updateById(plan);
+        }
     }
 
     @Override
@@ -197,7 +239,9 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 energyPlanDetailMapper.insert(detail);
             }
 
-            plan.setStatus(TaskStatus.SUCCESS);
+            // 今天及未来的方案标记为执行中，只有历史日期才显示已完成
+            plan.setStatus(planDate.isBefore(LocalDate.now())
+                    ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
             energyPlanMapper.updateById(plan);
             markTaskSuccess(task, plan.getId(), "能源运行方案已生成");
             return plan;
@@ -407,6 +451,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         if (plan == null) {
             throw new BusinessException(404, "该日期能源方案不存在");
         }
+        ensureEnergyPlanStatusCorrect(plan);
         return Result.ok(toEnergyPlanVO(plan, true));
     }
 
@@ -430,6 +475,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
         IPage<EnergyPlan> page = energyPlanMapper.selectPage(new Page<>(pageNum, pageSize), wrapper);
         List<EnergyPlanVO> records = page.getRecords().stream()
+                .peek(this::ensureEnergyPlanStatusCorrect)
                 .map(plan -> toEnergyPlanVO(plan, false))
                 .collect(Collectors.toList());
         return Result.ok(PageResult.of(page.getTotal(), pageNum, pageSize, records));

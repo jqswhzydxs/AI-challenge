@@ -65,6 +65,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -230,14 +231,14 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
      * </p>
      */
     private Result<TaskVO> generateScheduleForDate(LocalDate scheduleDate) {
-        // 幂等：已有成功的排产方案则跳过
+        // 幂等：只要存在非失败状态的排产方案就跳过（避免今天的 RUNNING 方案被重复生成）
         Long existingCount = schedulePlanMapper.selectCount(
                 new LambdaQueryWrapper<ProductionSchedulePlan>()
                         .eq(ProductionSchedulePlan::getScheduleDate, scheduleDate)
-                        .eq(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+                        .notIn(ProductionSchedulePlan::getStatus, TaskStatus.FAILED)
         );
         if (existingCount != null && existingCount > 0) {
-            log.info("日期 {} 已有成功的排产方案，跳过生成", scheduleDate);
+            log.info("日期 {} 已有非失败的排产方案，跳过生成", scheduleDate);
             throw new BusinessException(409, "日期 " + scheduleDate + " 已有排产方案，无需重复生成");
         }
 
@@ -286,6 +287,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             initialDelayString = "${schedule.auto-generate.initial-delay-ms:60000}")
     public void autoGeneratePendingSchedules() {
         LocalDate today = LocalDate.now();
+
+        // 把历史排产方案标记为已完成（已完成方案不再参与后续自动能源派生）
+        markPastSchedulesCompleted(today);
+
         List<ProductionOrder> pendingOrders = productionOrderMapper.selectList(
                 new LambdaQueryWrapper<ProductionOrder>()
                         .le(ProductionOrder::getDueTime, today.atTime(23, 59, 59))
@@ -308,6 +313,40 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             } catch (RuntimeException e) {
                 log.info("跳过 {} 排产方案自动生成: {}", dueDate, e.getMessage());
             }
+        }
+    }
+
+    /**
+     * 将排产日期早于今天的非已完成方案统一标记为已完成。
+     */
+    private void markPastSchedulesCompleted(LocalDate today) {
+        int rows = schedulePlanMapper.update(null,
+                new LambdaUpdateWrapper<ProductionSchedulePlan>()
+                        .lt(ProductionSchedulePlan::getScheduleDate, today)
+                        .ne(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+                        .set(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
+        );
+        if (rows > 0) {
+            log.info("已将 {} 条历史排产方案标记为已完成", rows);
+        }
+    }
+
+    /**
+     * 查询兜底：历史方案（日期早于今天）应为已完成；今天及未来不应为已完成。
+     */
+    private void ensureScheduleStatusCorrect(ProductionSchedulePlan plan) {
+        if (plan == null || plan.getScheduleDate() == null) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        if (plan.getScheduleDate().isBefore(today)
+                && !TaskStatus.SUCCESS.equals(plan.getStatus())) {
+            plan.setStatus(TaskStatus.SUCCESS);
+            schedulePlanMapper.updateById(plan);
+        } else if (!plan.getScheduleDate().isBefore(today)
+                && TaskStatus.SUCCESS.equals(plan.getStatus())) {
+            plan.setStatus(TaskStatus.RUNNING);
+            schedulePlanMapper.updateById(plan);
         }
     }
 
@@ -386,7 +425,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 scheduleDetailMapper.insert(detail);
             }
 
-            plan.setStatus(TaskStatus.SUCCESS);
+            // 今天及未来的方案标记为执行中，只有历史日期才显示已完成
+            plan.setStatus(scheduleDate.isBefore(LocalDate.now())
+                    ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
             schedulePlanMapper.updateById(plan);
             markTaskSuccess(task, plan.getId(), "排产方案已生成");
         } catch (RuntimeException e) {
@@ -500,7 +541,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             Result<ImportPlanResultVO> importResult = importDailyPlan(dailyPlan);
             ImportPlanResultVO importVO = importResult.getData();
             Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
-            markOrdersScheduled(orders);
+            markOrdersScheduled(orders, orderScheduleDate);
 
             String energyImportWarning = null;
             Object algorithmEnergyPlan = root.get("energy_plan");
@@ -559,11 +600,12 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         deleteExistingEnergyPlans(scheduleId);
 
         LocalDateTime planStart = parsePlanStart(energyPlanJson, dailyPlan);
+        LocalDate planDate = planStart.toLocalDate();
         EnergyPlan plan = new EnergyPlan();
         plan.setTaskId(taskId);
         plan.setSourceScheduleId(scheduleId);
-        plan.setPlanDate(planStart.toLocalDate());
-        plan.setStatus(TaskStatus.SUCCESS);
+        plan.setPlanDate(planDate);
+        plan.setStatus(planDate.isBefore(LocalDate.now()) ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
         plan.setObjective(textValue(energyPlanJson, "objective", "cost_energy_carbon_executability"));
         plan.setElectricPriceMode(textValue(energyPlanJson, "electric_price_mode", "PEAK_VALLEY"));
         plan.setTimeInterval(intValue(energyPlanJson.get("time_interval"), 60));
@@ -711,6 +753,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (plan == null) {
             throw new BusinessException(404, "排产方案不存在");
         }
+        ensureScheduleStatusCorrect(plan);
         return Result.ok(toPlanVO(plan, true));
     }
 
@@ -726,6 +769,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (plan == null) {
             throw new BusinessException(404, "该日期暂无排产方案，请先导入 daily_plan 或生成排产方案");
         }
+        ensureScheduleStatusCorrect(plan);
         return Result.ok(toPlanVO(plan, true));
     }
 
@@ -876,6 +920,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         );
 
         List<SchedulePlanVO> records = pageResult.getRecords().stream()
+                .peek(this::ensureScheduleStatusCorrect)
                 .map(plan -> toPlanVO(plan, false))
                 .collect(Collectors.toList());
 
@@ -1373,12 +1418,17 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         return text;
     }
 
-    private void markOrdersScheduled(List<ProductionOrder> orders) {
+    private void markOrdersScheduled(List<ProductionOrder> orders, LocalDate scheduleDate) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        boolean isPast = scheduleDate != null && scheduleDate.isBefore(today);
         for (ProductionOrder order : orders) {
             if (order.getId() == null || "COMPLETED".equals(order.getStatus())) {
                 continue;
             }
-            order.setStatus("SCHEDULED");
+            order.setStatus(isPast ? "COMPLETED" : "SCHEDULED");
             productionOrderMapper.updateById(order);
         }
     }
