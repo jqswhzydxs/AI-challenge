@@ -2,6 +2,7 @@ package com.xq.web.controller;
 
 import com.xq.common.result.Result;
 import com.xq.model.dto.LoginDTO;
+import com.xq.model.vo.AgentAdviceVO;
 import com.xq.model.vo.JointOptimizeEvaluationVO;
 import com.xq.model.vo.LoadForecastVO;
 import com.xq.model.vo.LoginVO;
@@ -9,6 +10,7 @@ import com.xq.model.vo.RealtimeControlImportResultVO;
 import com.xq.model.vo.ReportEnergyAnalysisVO;
 import com.xq.model.vo.SystemRoleVO;
 import com.xq.model.vo.SystemUserVO;
+import com.xq.service.AgentService;
 import com.xq.service.AuthService;
 import com.xq.service.EnergyDataService;
 import com.xq.service.EnergyPlanService;
@@ -43,6 +45,7 @@ class ControllerSmokeTest {
     private RealtimeControlService realtimeControlService;
     private ReportService reportService;
     private SystemService systemService;
+    private AgentService agentService;
 
     private MockMvc authMvc;
     private MockMvc energyMvc;
@@ -50,6 +53,7 @@ class ControllerSmokeTest {
     private MockMvc realtimeControlMvc;
     private MockMvc reportMvc;
     private MockMvc systemMvc;
+    private MockMvc agentMvc;
 
     @BeforeEach
     void setUp() {
@@ -60,6 +64,7 @@ class ControllerSmokeTest {
         realtimeControlService = mock(RealtimeControlService.class);
         reportService = mock(ReportService.class);
         systemService = mock(SystemService.class);
+        agentService = mock(AgentService.class);
 
         authMvc = MockMvcBuilders.standaloneSetup(new AuthController(authService)).build();
         energyMvc = MockMvcBuilders.standaloneSetup(new EnergyController(energyDataService, energyPlanService)).build();
@@ -67,6 +72,7 @@ class ControllerSmokeTest {
         realtimeControlMvc = MockMvcBuilders.standaloneSetup(new RealtimeControlController(realtimeControlService)).build();
         reportMvc = MockMvcBuilders.standaloneSetup(new ReportController(reportService)).build();
         systemMvc = MockMvcBuilders.standaloneSetup(new SystemController(systemService)).build();
+        agentMvc = MockMvcBuilders.standaloneSetup(new AgentController(agentService)).build();
     }
 
     @Test
@@ -119,6 +125,27 @@ class ControllerSmokeTest {
                 .andExpect(jsonPath("$.code", is(200)))
                 .andExpect(jsonPath("$.data.optimizeId", is(1)))
                 .andExpect(jsonPath("$.data.conflictCount", is(0)));
+    }
+
+    @Test
+    void agentOptimizationExplainEndpointReturnsStructuredAdvice() throws Exception {
+        // 验证新增 Agent 接口仍然遵循统一 Result 包装，并返回前端可直接展示的结构化字段。
+        when(agentService.explainOptimization(eq(1L), any()))
+                .thenReturn(Result.ok(AgentAdviceVO.builder()
+                        .scene("OPTIMIZATION_EXPLAIN")
+                        .aiEnabled(false)
+                        .riskLevel("LOW")
+                        .summary("协同优化结果已完成智能解读")
+                        .keyMetrics(List.of("MAPE：3.55%"))
+                        .build()));
+
+        agentMvc.perform(post("/api/agent/optimize/1/explain")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sessionId\":\"demo\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code", is(200)))
+                .andExpect(jsonPath("$.data.scene", is("OPTIMIZATION_EXPLAIN")))
+                .andExpect(jsonPath("$.data.riskLevel", is("LOW")));
     }
 
     @Test

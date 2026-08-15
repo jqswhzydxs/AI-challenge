@@ -4,6 +4,16 @@ server:
 spring:
   application:
     name: ai-energy-optimization
+  ai:
+    openai:
+      # 大模型 API Key 只允许通过环境变量注入，禁止写死在配置文件或代码中。
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        enabled: ${SPRING_AI_OPENAI_CHAT_ENABLED:true}
+        options:
+          model: ${SPRING_AI_OPENAI_CHAT_MODEL:gpt-4o-mini}
+          temperature: ${SPRING_AI_OPENAI_TEMPERATURE:0.2}
   servlet:
     multipart:
       max-file-size: ${MAX_UPLOAD_FILE_SIZE:50MB}
@@ -78,3 +88,10 @@ realtime-mpc:
   enabled: ${REALTIME_MPC_ENABLED:true}
   interval-ms: ${REALTIME_MPC_INTERVAL_MS:60000}
   initial-delay-ms: ${REALTIME_MPC_INITIAL_DELAY_MS:12000}
+
+# Spring AI 工业优化 Agent 配置。
+# 默认启用真实大模型调用；SPRING_AI_OPENAI_API_KEY 由环境变量注入。
+# 如果模型服务不可用，业务层会自动降级到规则兜底，避免演示接口直接失败。
+agent:
+  llm:
+    enabled: ${AGENT_LLM_ENABLED:true}
