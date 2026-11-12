@@ -502,52 +502,53 @@ CREATE TABLE IF NOT EXISTS report_statistic (
 
 -- ==========================================
 -- v1.2 存量库修正：能源历史数据允许不同来源共用同一时间戳
--- 说明：若旧唯一键已删除或新唯一键已存在，对应 ALTER 报错可忽略。
+-- 说明：完整初始化脚本已在 CREATE TABLE 中创建新唯一键，空库执行时不需要再执行下列存量库升级 ALTER。
 -- ==========================================
-ALTER TABLE energy_realtime_data DROP KEY uk_timestamp;
-ALTER TABLE energy_realtime_data ADD UNIQUE KEY uk_timestamp_source (timestamp, source);
-ALTER TABLE steel_energy_dataset DROP KEY uk_dataset_timestamp;
-ALTER TABLE steel_energy_dataset ADD UNIQUE KEY uk_dataset_timestamp_source (timestamp, data_quality);
+-- ALTER TABLE energy_realtime_data DROP KEY uk_timestamp;
+-- ALTER TABLE energy_realtime_data ADD UNIQUE KEY uk_timestamp_source (timestamp, source);
+-- ALTER TABLE steel_energy_dataset DROP KEY uk_dataset_timestamp;
+-- ALTER TABLE steel_energy_dataset ADD UNIQUE KEY uk_dataset_timestamp_source (timestamp, data_quality);
 
 
 ALTER TABLE algorithm_task
     MODIFY COLUMN task_type VARCHAR(64) NOT NULL
         COMMENT 'PRODUCTION_SCHEDULE/ENERGY_PLAN/JOINT_OPTIMIZATION/REALTIME_CONTROL/REALTIME_MPC';
 
-CREATE TABLE IF NOT EXISTS mpc_realtime_control (
-                                                    id BIGINT PRIMARY KEY COMMENT '控制记录ID',
-                                                    task_id BIGINT NULL COMMENT '对应算法任务ID，可为空',
-                                                    control_date DATE NOT NULL COMMENT '控制日期，由后端按入库日期或业务日期填充',
-                                                    control_time TIME NOT NULL COMMENT '控制时间，对应timestamp，格式HH:mm:ss',
-                                                    raw_timestamp VARCHAR(32) NOT NULL COMMENT '原始时间字符串',
-                                                    boiler_load_mw DECIMAL(14,6) NOT NULL COMMENT '锅炉负荷指令，MW',
-                                                    turbine_output_mw DECIMAL(14,6) NOT NULL COMMENT '汽机出力指令，MW',
-                                                    grid_purchase_kwh DECIMAL(14,6) NOT NULL COMMENT '外购电力指令，kWh',
-                                                    power_factor_target DECIMAL(8,6) NOT NULL COMMENT '功率因数目标值',
-                                                    elec_next_5min_kwh DECIMAL(14,6) NOT NULL COMMENT '未来5分钟用电预测，kWh',
-                                                    steam_next_5min_t DECIMAL(14,6) NOT NULL COMMENT '未来5分钟蒸汽预测，吨',
-                                                    source_file_name VARCHAR(255) NULL COMMENT '来源文件名，如realtime_control.json',
-                                                    raw_json LONGTEXT NULL COMMENT '原始JSON',
-                                                    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '入库时间',
-                                                    UNIQUE KEY uk_control_datetime (control_date, control_time),
-                                                    KEY idx_mpc_task_id (task_id),
-                                                    KEY idx_mpc_create_time (create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MPC实时调控结果表';
+-- 完整初始化脚本前面已创建 mpc_realtime_control，这里原本是存量库补表语句，空库初始化时不重复执行。
+-- CREATE TABLE IF NOT EXISTS mpc_realtime_control (
+--                                                     id BIGINT PRIMARY KEY COMMENT '控制记录ID',
+--                                                     task_id BIGINT NULL COMMENT '对应算法任务ID，可为空',
+--                                                     control_date DATE NOT NULL COMMENT '控制日期，由后端按入库日期或业务日期填充',
+--                                                     control_time TIME NOT NULL COMMENT '控制时间，对应timestamp，格式HH:mm:ss',
+--                                                     raw_timestamp VARCHAR(32) NOT NULL COMMENT '原始时间字符串',
+--                                                     boiler_load_mw DECIMAL(14,6) NOT NULL COMMENT '锅炉负荷指令，MW',
+--                                                     turbine_output_mw DECIMAL(14,6) NOT NULL COMMENT '汽机出力指令，MW',
+--                                                     grid_purchase_kwh DECIMAL(14,6) NOT NULL COMMENT '外购电力指令，kWh',
+--                                                     power_factor_target DECIMAL(8,6) NOT NULL COMMENT '功率因数目标值',
+--                                                     elec_next_5min_kwh DECIMAL(14,6) NOT NULL COMMENT '未来5分钟用电预测，kWh',
+--                                                     steam_next_5min_t DECIMAL(14,6) NOT NULL COMMENT '未来5分钟蒸汽预测，吨',
+--                                                     source_file_name VARCHAR(255) NULL COMMENT '来源文件名，如realtime_control.json',
+--                                                     raw_json LONGTEXT NULL COMMENT '原始JSON',
+--                                                     create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '入库时间',
+--                                                     UNIQUE KEY uk_control_datetime (control_date, control_time),
+--                                                     KEY idx_mpc_task_id (task_id),
+--                                                     KEY idx_mpc_create_time (create_time)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MPC实时调控结果表';
 
 -- ==========================================
 -- v1.1 增量升级：算法组新版 daily_plan（2026-07-20）
--- 对已有的 production_schedule_plan 表执行下面 ALTER
+-- 完整初始化脚本已在 CREATE TABLE 中创建下列字段，空库执行时不需要再执行下列存量库升级 ALTER。
 -- ==========================================
 use challenge_cup_energy;
-ALTER TABLE production_schedule_plan ADD COLUMN ec_baseline DECIMAL(12,4) NULL COMMENT '优化前EC基准值，kWh/吨' AFTER elec_coefficient;
-ALTER TABLE production_schedule_plan ADD COLUMN ec_optimized DECIMAL(12,4) NULL COMMENT '优化后EC值，kWh/吨' AFTER ec_baseline;
-ALTER TABLE production_schedule_plan ADD COLUMN ec_reduction DECIMAL(12,4) NULL COMMENT 'EC降低百分比' AFTER ec_optimized;
-ALTER TABLE production_schedule_plan ADD COLUMN optimal_temperature DECIMAL(12,4) NULL COMMENT '最优温度，℃' AFTER ec_reduction;
-ALTER TABLE production_schedule_plan ADD COLUMN optimal_speed DECIMAL(12,4) NULL COMMENT '最优速度' AFTER optimal_temperature;
+-- ALTER TABLE production_schedule_plan ADD COLUMN ec_baseline DECIMAL(12,4) NULL COMMENT '优化前EC基准值，kWh/吨' AFTER elec_coefficient;
+-- ALTER TABLE production_schedule_plan ADD COLUMN ec_optimized DECIMAL(12,4) NULL COMMENT '优化后EC值，kWh/吨' AFTER ec_baseline;
+-- ALTER TABLE production_schedule_plan ADD COLUMN ec_reduction DECIMAL(12,4) NULL COMMENT 'EC降低百分比' AFTER ec_optimized;
+-- ALTER TABLE production_schedule_plan ADD COLUMN optimal_temperature DECIMAL(12,4) NULL COMMENT '最优温度，℃' AFTER ec_reduction;
+-- ALTER TABLE production_schedule_plan ADD COLUMN optimal_speed DECIMAL(12,4) NULL COMMENT '最优速度' AFTER optimal_temperature;
 
 -- ==========================================
 -- v1.2 增量升级：能源方案记录来源排产方案
--- 对已有的 energy_plan 表执行下面 ALTER
+-- 完整初始化脚本已在 CREATE TABLE 中创建下列字段和索引，空库执行时不需要再执行下列存量库升级 ALTER。
 -- ==========================================
-ALTER TABLE energy_plan ADD COLUMN source_schedule_id BIGINT NULL COMMENT '来源排产方案ID，用于自动生成链路幂等判断' AFTER task_id;
-ALTER TABLE energy_plan ADD INDEX idx_energy_plan_source_schedule (source_schedule_id);
+-- ALTER TABLE energy_plan ADD COLUMN source_schedule_id BIGINT NULL COMMENT '来源排产方案ID，用于自动生成链路幂等判断' AFTER task_id;
+-- ALTER TABLE energy_plan ADD INDEX idx_energy_plan_source_schedule (source_schedule_id);
