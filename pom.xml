@@ -12,11 +12,16 @@
     <description>生产-能源交互式优化平台</description>
 
     <modules>
+        <module>AI-contracts</module>
+        <module>AI-infrastructure</module>
         <module>AI-common</module>
         <module>AI-model</module>
         <module>AI-mapper</module>
         <module>AI-service</module>
         <module>AI-web</module>
+        <module>AI-algorithm-service</module>
+        <module>AI-agent-service</module>
+        <module>AI-gateway</module>
     </modules>
 
     <properties>
@@ -26,7 +31,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <spring-boot.version>3.2.7</spring-boot.version>
+        <spring-boot.version>3.5.16</spring-boot.version>
+        <spring-cloud.version>2025.0.3</spring-cloud.version>
         <spring-ai.version>1.0.6</spring-ai.version>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <druid.version>1.2.23</druid.version>
@@ -40,6 +46,13 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <!-- Spring Boot BOM -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
@@ -118,6 +131,12 @@
             </dependency>
 
             <!-- 内部模块 -->
+<dependency><groupId>com.xq</groupId><artifactId>AI-infrastructure</artifactId><version>${project.version}</version></dependency>
+            <dependency>
+                <groupId>com.xq</groupId>
+                <artifactId>AI-contracts</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>com.xq</groupId>
                 <artifactId>AI-common</artifactId>
@@ -148,10 +167,12 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring-boot.version}</version>
+                    <executions><execution><goals><goal>repackage</goal></goals></execution></executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.11.0</version>
                     <configuration>
                         <source>${java.version}</source>
                         <target>${java.version}</target>

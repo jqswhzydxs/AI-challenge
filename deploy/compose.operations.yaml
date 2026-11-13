@@ -1,0 +1,6 @@
+# Optional admission/application pause; existing durable requests retain their owners.
+services:
+  core:
+    environment:
+      ALGORITHM_MAX_PENDING: ${ALGORITHM_MAX_PENDING:-1000}
+      ALGORITHM_APPLICATIONS_ENABLED: ${ALGORITHM_APPLICATIONS_ENABLED:-true}

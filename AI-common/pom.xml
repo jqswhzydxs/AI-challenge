@@ -13,6 +13,7 @@
     <description>通用模块 - 工具类、异常、配置</description>
 
     <dependencies>
+<dependency><groupId>com.xq</groupId><artifactId>AI-contracts</artifactId></dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

@@ -21,6 +21,14 @@ public class SchedulePlanVO {
     /** 排产方案 ID */
     private Long scheduleId;
 
+    /** All computed schedule indicators are planned, never measured delivery. */
+    private String measurementType;
+    private String executionStatus;
+    private String generationStatus;
+    private String deadlineMetricBasis;
+    private String loadMetricBasis;
+    private java.util.Map<String, Object> algorithmInfo;
+
     /** 对应任务 ID */
     private Long taskId;
 
@@ -60,7 +68,7 @@ public class SchedulePlanVO {
     /** 节能率，% */
     private BigDecimal energySavingsRate;
 
-    /** 平均负荷率，% */
+    /** 计划峰均负荷比，%；不是设备容量利用率 */
     private BigDecimal avgLoadRate;
 
     /** 交期达成率，% */

@@ -1,0 +1,50 @@
+server:
+  port: ${SERVER_PORT:8083}
+spring:
+  task:
+    scheduling:
+      pool:
+        size: 4
+  application:
+    name: algorithm-service
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/industrial_algorithm?serverTimezone=UTC}
+    username: ${DB_USERNAME:algorithm}
+    password: ${DB_PASSWORD:}
+  flyway:
+    locations: classpath:db/migration
+  rabbitmq:
+    host: ${MQ_HOST:localhost}
+    username: ${MQ_USERNAME:industrial}
+    password: ${MQ_PASSWORD:}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+algorithm:
+  artifacts: ${ARTIFACT_ROOT:target/artifacts}
+  script: ${ALGORITHM_SCRIPT:data/algorithm/generate_plan.py}
+  command: ${ALGORITHM_COMMAND:python}
+  timeout-seconds: ${ALGORITHM_TIMEOUT_SECONDS:180}
+  concurrency: ${ALGORITHM_CONCURRENCY:2}
+  lease-seconds: ${ALGORITHM_LEASE_SECONDS:30}
+  max-attempts: ${ALGORITHM_MAX_ATTEMPTS:3}
+  service-token: ${ALGORITHM_SERVICE_TOKEN:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+messaging:
+  owner: algorithm
+
+logging:
+  structured:
+    format:
+      console: ecs

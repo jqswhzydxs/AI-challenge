@@ -14,6 +14,10 @@ import java.util.List;
 @Data
 @Builder
 public class RealtimeDataVO {
+    /** Existing timeInterval is a request hint; no resampling is performed by this endpoint. */
+    private String intervalBasis;
+    private String quantityIntervalBasis;
+
 
     /** 时间粒度，min */
     private Integer timeInterval;

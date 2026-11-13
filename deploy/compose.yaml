@@ -1,0 +1,148 @@
+name: challenge-microservices
+x-log: &bounded-logs
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+services:
+  mysql:
+    logging: *bounded-logs
+    image: mysql:8.4.8@sha256:2952e3be7807f06fc18de50b3ea1a632d5c70d63482ff7d7376fe3aa8999babf
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?configure .env}
+      MYSQL_DATABASE: challenge_cup_energy
+      CORE_DB_PASSWORD: ${CORE_DB_PASSWORD:?configure .env}
+      ALGORITHM_DB_PASSWORD: ${ALGORITHM_DB_PASSWORD:?configure .env}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:?configure .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../database/sql/数据库建表SQL.sql:/docker-entrypoint-initdb.d/00-core.sql:ro
+      - ./mysql-init.sh:/docker-entrypoint-initdb.d/01-users.sh:ro
+      - ../database/sql/seed_demo_data.sql:/docker-entrypoint-initdb.d/02-demo.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin -h127.0.0.1 ping -uroot --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 768m
+  rabbitmq:
+    logging: *bounded-logs
+    image: rabbitmq:4.1.8-management@sha256:479361ae8fbb8c852bf67f4acbbfa6f3f6810f8f08119ae6ad4d922bfeaa27c3
+    environment:
+      RABBITMQ_DEFAULT_USER: industrial
+      RABBITMQ_DEFAULT_PASS: ${MQ_PASSWORD:?configure .env}
+    volumes: [rabbit-data:/var/lib/rabbitmq]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 512m
+  core:
+    logging: *bounded-logs
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.java
+      args: {APP_MODULE: AI-web}
+    environment:
+      SERVER_PORT: 8081
+      DB_URL: jdbc:mysql://mysql:3306/challenge_cup_energy?serverTimezone=UTC
+      DB_USERNAME: industrial_core
+      DB_PASSWORD: ${CORE_DB_PASSWORD}
+      MQ_HOST: rabbitmq
+      MQ_USERNAME: industrial
+      MQ_PASSWORD: ${MQ_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN}
+      ALGORITHM_EXECUTION_MODE: REMOTE
+      ALGORITHM_SCRIPT_FILE: /app/algorithm/generate_plan.py
+      ARTIFACT_ROOT: /artifacts
+      MOCK_DEVICE_ENABLED: 'false'
+      REALTIME_MPC_ENABLED: 'false'
+      SCHEDULE_LEGACY_AUTO_ENABLED: 'false'
+    depends_on:
+      mysql: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    volumes: [artifacts:/artifacts]
+    ports: ['127.0.0.1:18081:8081']
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8081/actuator/health/readiness]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 768m
+  algorithm:
+    logging: *bounded-logs
+    build: {context: .., dockerfile: deploy/Dockerfile.algorithm}
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/industrial_algorithm?serverTimezone=UTC
+      DB_USERNAME: algorithm
+      DB_PASSWORD: ${ALGORITHM_DB_PASSWORD}
+      MQ_HOST: rabbitmq
+      MQ_USERNAME: industrial
+      MQ_PASSWORD: ${MQ_PASSWORD}
+      ALGORITHM_SCRIPT: /app/algorithm/generate_plan.py
+      ALGORITHM_COMMAND: python
+      ARTIFACT_ROOT: /artifacts
+      ALGORITHM_SERVICE_TOKEN: ${ALGORITHM_SERVICE_TOKEN}
+    depends_on:
+      mysql: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
+    volumes: [artifacts:/artifacts]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8083/actuator/health/readiness', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 768m
+  agent:
+    logging: *bounded-logs
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.java
+      args: {APP_MODULE: AI-agent-service}
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/industrial_agent?serverTimezone=UTC
+      DB_USERNAME: agent
+      DB_PASSWORD: ${AGENT_DB_PASSWORD}
+      CORE_URL: http://core:8081
+      AGENT_SERVICE_TOKEN: ${AGENT_SERVICE_TOKEN}
+      AGENT_CHAT_PROVIDER: ${AGENT_CHAT_PROVIDER:-none}
+      AGENT_LLM_ENABLED: ${AGENT_LLM_ENABLED:-false}
+      SPRING_AI_OPENAI_API_KEY: ${SPRING_AI_OPENAI_API_KEY:-}
+      SPRING_AI_OPENAI_BASE_URL: ${SPRING_AI_OPENAI_BASE_URL:-https://api.openai.com}
+      SPRING_AI_OPENAI_CHAT_MODEL: ${SPRING_AI_OPENAI_CHAT_MODEL:-gpt-4o-mini}
+    depends_on:
+      mysql: {condition: service_healthy}
+      core: {condition: service_healthy}
+    ports: ['127.0.0.1:18082:8082']
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8082/actuator/health/readiness]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 768m
+  gateway:
+    logging: *bounded-logs
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.java
+      args: {APP_MODULE: AI-gateway}
+    environment:
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=55 -XX:ActiveProcessorCount=2 -Dreactor.netty.ioWorkerCount=4 -Dfile.encoding=UTF-8 -Duser.timezone=UTC
+      CORE_URL: http://core:8081
+      AGENT_URL: http://agent:8082
+    depends_on:
+      core: {condition: service_healthy}
+      agent: {condition: service_healthy}
+    ports: ['127.0.0.1:18080:8080']
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8080/actuator/health/readiness]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    mem_limit: 512m
+volumes:
+  mysql-data:
+  rabbit-data:
+  artifacts:

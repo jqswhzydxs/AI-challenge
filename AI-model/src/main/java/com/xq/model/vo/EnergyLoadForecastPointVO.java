@@ -22,10 +22,10 @@ public class EnergyLoadForecastPointVO {
     /** 小时序号 */
     private Integer hourIndex;
 
-    /** 电力负荷，kWh */
+    /** 时段平均功率，kW */
     private BigDecimal electricityLoad;
 
-    /** 蒸汽负荷 */
+    /** 时段平均蒸汽流量，t/h */
     private BigDecimal steamLoad;
 
     /** 预计能源成本，元 */

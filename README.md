@@ -1,3 +1,5 @@
+> 2026-11-12：项目已加入渐进式服务化实现。独立应用、Compose、任务恢复与 Agent 证据语义的当前运行入口见 [微服务运行说明](docs/microservices/README.md)，实际验证范围见 [验收报告](docs/microservices/verification-report.md)。下面保留原项目说明供业务与算法资料查阅。
+
 # 生产-能源交互式优化平台 · 后端（AI-challenge）
 
 > 面向钢铁流程工业的「生产排产 → 能源运行 → 协同评估 → 实时调控」闭环后端。

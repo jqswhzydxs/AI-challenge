@@ -42,6 +42,21 @@ import static org.mockito.Mockito.when;
 class EnergyPlanServiceImplTest {
 
     @Test
+    void absentCarbonSummaryIsUnknownButRecordedZeroRemainsZero() {
+        var reports = mock(ReportStatisticMapper.class);
+        var service = service(mock(EnergyPlanMapper.class), mock(EnergyPlanDetailMapper.class),
+                mock(EnergyEquipmentMapper.class), mock(EnergyRealtimeDataMapper.class), reports,
+                mock(EvaluationMetricMapper.class));
+        when(reports.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        org.junit.jupiter.api.Assertions.assertNull(service.getCarbonReduction(new PageQueryDTO()).getData().getTotalCarbonReduction());
+        var record = new ReportStatistic();record.setCarbonReduction(BigDecimal.ZERO);
+        when(reports.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(record));
+        assertEquals(new BigDecimal("0.0000"), service.getCarbonReduction(new PageQueryDTO()).getData().getTotalCarbonReduction());
+        record.setCarbonReduction(null);
+        org.junit.jupiter.api.Assertions.assertNull(service.getCarbonReduction(new PageQueryDTO()).getData().getTotalCarbonReduction());
+    }
+
+    @Test
     void getPlanDetailReturnsForecastOptimizationStrategiesAndPricePolicy() {
         AlgorithmTaskMapper algorithmTaskMapper = mock(AlgorithmTaskMapper.class);
         EnergyPlanMapper energyPlanMapper = mock(EnergyPlanMapper.class);
@@ -67,6 +82,7 @@ class EnergyPlanServiceImplTest {
         );
 
         EnergyPlan plan = new EnergyPlan();
+        plan.setTimeInterval(60);
         plan.setId(200L);
         plan.setTaskId(201L);
         plan.setPlanDate(LocalDate.of(2026, 7, 17));
@@ -91,9 +107,9 @@ class EnergyPlanServiceImplTest {
         EnergyPlanVO data = service.getPlanDetail("2026-07-17").getData();
 
         assertEquals(200L, data.getPlanId());
-        assertEquals(new BigDecimal("120.00"), data.getLoadForecast().getPeakLoad());
+        assertEquals(new BigDecimal("120.000000"), data.getLoadForecast().getPeakLoad());
         assertEquals("18:00-19:00", data.getLoadForecast().getPeakHour());
-        assertEquals(new BigDecimal("60.00"), data.getLoadForecast().getValleyLoad());
+        assertEquals(new BigDecimal("60.000000"), data.getLoadForecast().getValleyLoad());
         assertEquals("00:00-01:00", data.getLoadForecast().getValleyHour());
         assertNotNull(data.getOptimizationResult());
         assertEquals(new BigDecimal("80.00"), data.getOptimizationResult().getTotalCost());
@@ -104,7 +120,7 @@ class EnergyPlanServiceImplTest {
     }
 
     @Test
-    void deviceStatusUsesLatestDetailAndWarningLevel() {
+    void deviceStatusUsesLatestMpcAndWarningLevel() {
         EnergyPlanDetailMapper energyPlanDetailMapper = mock(EnergyPlanDetailMapper.class);
         EnergyEquipmentMapper energyEquipmentMapper = mock(EnergyEquipmentMapper.class);
         EnergyPlanServiceImpl service = service(
@@ -125,10 +141,11 @@ class EnergyPlanServiceImplTest {
         equipment.setEfficiency(new BigDecimal("92.50"));
         when(energyEquipmentMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(equipment));
 
-        EnergyPlanDetail latest = new EnergyPlanDetail();
-        latest.setEquipmentId(10L);
-        latest.setOutput(new BigDecimal("96.00"));
-        when(energyPlanDetailMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(latest);
+        MpcRealtimeControlMapper mpcMapper = mock(MpcRealtimeControlMapper.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "mpcRealtimeControlMapper", mpcMapper);
+        com.xq.model.entity.MpcRealtimeControl latest = new com.xq.model.entity.MpcRealtimeControl();
+        latest.setBoilerLoadMw(new BigDecimal("96.00"));
+        when(mpcMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(latest);
 
         List<EnergyDeviceStatusVO> data = service.getDeviceStatus().getData();
 
@@ -153,6 +170,7 @@ class EnergyPlanServiceImplTest {
         );
 
         EnergyPlan plan = new EnergyPlan();
+        plan.setTimeInterval(60);
         plan.setId(200L);
         plan.setPlanDate(LocalDate.of(2026, 7, 17));
         when(energyPlanMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(plan);
@@ -166,9 +184,9 @@ class EnergyPlanServiceImplTest {
 
         assertEquals(3, data.getPoints().size());
         assertEquals(18, data.getPoints().get(1).getHourIndex());
-        assertEquals(new BigDecimal("120.00"), data.getSummary().getPeakLoad());
-        assertEquals(new BigDecimal("60.00"), data.getSummary().getValleyLoad());
-        assertEquals(new BigDecimal("90.00"), data.getSummary().getAvgLoad());
+        assertEquals(new BigDecimal("120.000000"), data.getSummary().getPeakLoad());
+        assertEquals(new BigDecimal("60.000000"), data.getSummary().getValleyLoad());
+        assertEquals(new BigDecimal("90.000000"), data.getSummary().getAvgLoad());
     }
 
     @Test

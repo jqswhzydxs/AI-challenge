@@ -34,6 +34,8 @@ public class ProductionController {
 
     private final ProductionOrderService orderService;
     private final ProductionScheduleService scheduleService;
+    private final com.xq.service.impl.RemoteScheduleService remote;
+    private final com.xq.service.AuthService auth;
 
     @Operation(summary = "生产订单列表", description = "分页查询生产订单，支持按日期、状态筛选")
     @GetMapping("/orders")
@@ -51,13 +53,17 @@ public class ProductionController {
 
     @Operation(summary = "生成排产方案", description = "根据排产参数发起异步排产任务，返回任务 ID 供后续查询")
     @PostMapping("/schedule/generate")
-    public Result<TaskVO> generateSchedule(@Valid @RequestBody ScheduleGenerateDTO dto) {
+    public Result<TaskVO> generateSchedule(@Valid @RequestBody ScheduleGenerateDTO dto,
+            @RequestHeader(value="Idempotency-Key",required=false) String key,jakarta.servlet.http.HttpServletRequest request) {
+        if(remote.useRemote() && dto.getPlannedQuantity()!=null)return remote.submit(dto,key,auth.currentUser(request.getHeader("Authorization")).getData().getUserId(),request.getHeader("traceparent"));
         return scheduleService.generate(dto);
     }
 
     @Operation(summary = "使用已采集能源数据生成排产方案", description = "前端只需录入排产日期和次日订单产量，后端自动读取 energy_realtime_data 作为算法能源输入")
     @PostMapping("/schedules/generate-from-collected-data")
-    public Result<TaskVO> generateScheduleFromCollectedData(@Valid @RequestBody ScheduleGenerateDTO dto) {
+    public Result<TaskVO> generateScheduleFromCollectedData(@Valid @RequestBody ScheduleGenerateDTO dto,
+            @RequestHeader(value="Idempotency-Key",required=false) String key,jakarta.servlet.http.HttpServletRequest request) {
+        if(remote.useRemote())return remote.submit(dto,key,auth.currentUser(request.getHeader("Authorization")).getData().getUserId(),request.getHeader("traceparent"));
         return scheduleService.generateFromCollectedData(dto);
     }
 
@@ -68,6 +74,7 @@ public class ProductionController {
             @RequestPart("file") MultipartFile file,
             @Parameter(description = "排产日期，yyyy-MM-dd；不传时自动取最早待排产订单的交期日期")
             @RequestParam(value = "scheduleDate", required = false) String scheduleDate) throws IOException {
+        if(remote.useRemote())throw new com.xq.common.exception.BusinessException(409,"远程模式请使用已采集数据入口，原始 CSV 补录走采集接口");
         return scheduleService.generateFromRawData(file.getBytes(), file.getOriginalFilename(), scheduleDate);
     }
 

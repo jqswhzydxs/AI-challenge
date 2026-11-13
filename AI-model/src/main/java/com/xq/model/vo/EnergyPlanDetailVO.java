@@ -34,6 +34,10 @@ public class EnergyPlanDetailVO {
     /** 蒸汽用量 */
     private BigDecimal steamConsumption;
 
+    /** Derived using the parent plan interval; missing interval stays unknown. */
+    private BigDecimal averagePowerKw;
+    private BigDecimal steamFlowTonnesPerHour;
+
     /** 碳排放，tCO2 */
     private BigDecimal carbonEmissionTco2;
 

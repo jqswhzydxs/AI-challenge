@@ -1,0 +1,57 @@
+server:
+  port: ${SERVER_PORT:8082}
+spring:
+  jdbc:
+    template:
+      query-timeout: 3s
+  application:
+    name: agent-service
+  datasource:
+    hikari:
+      connection-timeout: 3000
+      maximum-pool-size: 8
+    url: ${DB_URL:jdbc:mysql://localhost:3306/industrial_agent?serverTimezone=UTC}
+    username: ${DB_USERNAME:agent}
+    password: ${DB_PASSWORD:}
+  flyway:
+    locations: classpath:db/migration
+  ai:
+    model:
+      chat: ${AGENT_CHAT_PROVIDER:none}
+      embedding: none
+      image: none
+      moderation: none
+      audio:
+        speech: none
+        transcription: none
+    openai:
+      api-key: ${SPRING_AI_OPENAI_API_KEY:}
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:https://api.openai.com}
+      chat:
+        options:
+          model: ${SPRING_AI_OPENAI_CHAT_MODEL:gpt-4o-mini}
+          temperature: 0.2
+    retry:
+      max-attempts: 1
+agent:
+  llm:
+    enabled: ${AGENT_LLM_ENABLED:false}
+  core-url: ${CORE_URL:http://localhost:8081}
+  service-token: ${AGENT_SERVICE_TOKEN:}
+  total-timeout-seconds: ${AGENT_TOTAL_TIMEOUT_SECONDS:30}
+  concurrency: ${AGENT_CONCURRENCY:4}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  structured:
+    format:
+      console: ecs

@@ -30,7 +30,10 @@ public class EnergyDeviceStatusVO {
     /** 运行状态 */
     private String status;
 
-    /** 当前输出 */
+    private String outputUnit;
+    private String measurementType;
+
+    /** 当前模型控制输出，非现场实测 */
     private BigDecimal currentOutput;
 
     /** 最大输出 */

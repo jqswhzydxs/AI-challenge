@@ -49,7 +49,6 @@ public class ProductionOrderServiceImpl implements ProductionOrderService {
         Page<ProductionOrder> result = productionOrderMapper.selectPage(page, wrapper);
 
         List<ProductionOrderVO> records = result.getRecords().stream().map(o -> {
-            ensureCompletedIfOverdue(o);
             return ProductionOrderVO.builder()
                     .orderId(o.getId())
                     .orderNo(o.getOrderNo())
@@ -63,20 +62,6 @@ public class ProductionOrderServiceImpl implements ProductionOrderService {
         }).collect(Collectors.toList());
 
         return Result.ok(PageResult.of(result.getTotal(), query.getPageNum(), query.getPageSize(), records));
-    }
-
-    /**
-     * 查询兜底：若订单截止时间已过期且状态非已完成，则实时修正为已完成。
-     */
-    private void ensureCompletedIfOverdue(ProductionOrder order) {
-        if (order == null || order.getDueTime() == null) {
-            return;
-        }
-        if (order.getDueTime().isBefore(LocalDateTime.now())
-                && !"COMPLETED".equals(order.getStatus())) {
-            order.setStatus("COMPLETED");
-            productionOrderMapper.updateById(order);
-        }
     }
 
     @Override

@@ -24,6 +24,7 @@ public class ProductionSchedulePlan {
     private Long id;
     /** 对应算法任务 ID */
     private Long taskId;
+    private String sourceRequestId;
     /** 方案名称 */
     private String scheduleName;
     /** 排产日期 */

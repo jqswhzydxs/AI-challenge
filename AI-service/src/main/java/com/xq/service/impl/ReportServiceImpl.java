@@ -45,7 +45,7 @@ public class ReportServiceImpl implements ReportService {
     @Override
     public Result<OptimizationEffectVO> getOptimizationEffect(PageQueryDTO query) {
         // 取最近一条 SCHEDULE 类型的评价指标
-        EvaluationMetric latestSchedule = latestMetric();
+        EvaluationMetric latestSchedule = dated(query) ? null : latestMetric();
 
         // 从 report_statistic 累加总降本和碳减排
         BigDecimal costSaving = BigDecimal.ZERO;
@@ -56,16 +56,16 @@ public class ReportServiceImpl implements ReportService {
         }
 
         BigDecimal ecBefore = latestSchedule != null && latestSchedule.getEcBefore() != null
-                ? latestSchedule.getEcBefore() : new BigDecimal("14.0");
+                ? latestSchedule.getEcBefore() : null;
         BigDecimal ecAfter = latestSchedule != null && latestSchedule.getEcAfter() != null
-                ? latestSchedule.getEcAfter() : new BigDecimal("13.3");
-        BigDecimal energyReductionRate = ecBefore.compareTo(BigDecimal.ZERO) > 0
+                ? latestSchedule.getEcAfter() : null;
+        BigDecimal energyReductionRate = ecBefore != null && ecAfter != null && ecBefore.compareTo(BigDecimal.ZERO) > 0
                 ? ecBefore.subtract(ecAfter).multiply(new BigDecimal("100")).divide(ecBefore, 1, RoundingMode.HALF_UP)
-                : new BigDecimal("5.2");
+                : null;
         BigDecimal mape = latestSchedule != null && latestSchedule.getMape() != null
-                ? latestSchedule.getMape() : new BigDecimal("2.1");
+                ? latestSchedule.getMape() : null;
         BigDecimal er = latestSchedule != null && latestSchedule.getEr() != null
-                ? latestSchedule.getEr() : new BigDecimal("96.8");
+                ? latestSchedule.getEr() : null;
 
         OptimizationEffectVO vo = OptimizationEffectVO.builder()
                 .costSaving(costSaving)
@@ -82,7 +82,7 @@ public class ReportServiceImpl implements ReportService {
     @Override
     public Result<ReportEnergyAnalysisVO> getEnergyAnalysis(PageQueryDTO query) {
         List<ReportStatistic> stats = reportStats(query);
-        EvaluationMetric latest = latestMetric();
+        EvaluationMetric latest = dated(query) ? null : latestMetric();
         BigDecimal totalEnergyKgce = sum(stats.stream().map(ReportStatistic::getTotalEnergyKgce).toList());
         BigDecimal totalEnergyCost = sum(stats.stream().map(ReportStatistic::getEnergyCost).toList());
         BigDecimal totalCostSaving = sum(stats.stream().map(ReportStatistic::getCostSaving).toList());
@@ -242,8 +242,13 @@ public class ReportServiceImpl implements ReportService {
         );
     }
 
+    private boolean dated(PageQueryDTO query) {
+        return query != null && firstNonBlank(query.getDate(), query.getStartDate(), query.getEndDate(),
+                query.getStartTime(), query.getEndTime()) != null;
+    }
+
     private BigDecimal sum(List<BigDecimal> values) {
-        return values.stream().map(this::value).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return values.isEmpty() || values.stream().anyMatch(java.util.Objects::isNull) ? null : values.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private BigDecimal value(BigDecimal value) {
@@ -251,12 +256,12 @@ public class ReportServiceImpl implements ReportService {
     }
 
     private BigDecimal scale(BigDecimal value, int scale) {
-        return value(value).setScale(scale, RoundingMode.HALF_UP);
+        return value == null ? null : value.setScale(scale, RoundingMode.HALF_UP);
     }
 
     private BigDecimal ratio(BigDecimal numerator, BigDecimal denominator, int scale) {
-        if (denominator == null || denominator.compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
+        if (numerator == null || denominator == null || denominator.compareTo(BigDecimal.ZERO) == 0) {
+            return null;
         }
         return value(numerator).divide(denominator, scale, RoundingMode.HALF_UP);
     }

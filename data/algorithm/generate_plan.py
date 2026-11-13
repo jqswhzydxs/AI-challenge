@@ -649,13 +649,29 @@ def build_result(input_file: Path, orders_file: Path | None = None) -> dict:
     print(f"EC reduction: {reduction_rate:.2f}%")
 
     generated_at = plan_start or datetime.now()
+    raw_steps = [(b.timestamp - a.timestamp).total_seconds() / 60
+                 for a, b in zip(raw_points, raw_points[1:])]
+    raw_granularity = f"{median(raw_steps):g} min" if raw_steps else "UNKNOWN"
     daily_plan = {
         "timestamp": generated_at.strftime("%Y-%m-%d %H:%M:%S"),
         "plan_horizon": 24,
         "unit": "hour",
         "data_granularity": granularity,
+        "raw_data_granularity": raw_granularity,
+        "calculation_granularity": "1 min",
+        "output_granularity": "60 min",
+        "measurement_type": "PLANNED",
+        "process_search": {
+            "method": "EXHAUSTIVE_GRID", "scope": "GRID_OPTIMUM_ONLY",
+            "temperature_values_c": [1140,1145,1150,1155,1160],
+            "speed_values_m_per_s": [9,9.5,10,10.5,11],
+            "formula": "EC=14*(1+0.00222*(T-1150))*(1-0.03*(v-10))",
+            "assumptions": "固定系数，无质量/温速耦合；正产量下低温高速边界最省电；不是全局工艺最优"
+        },
         "demand_source": demand_source,
         "order_count": len(orders),
+        "order_snapshot": [{"order_no": order.order_no, "planned_quantity": order.planned_quantity,
+                            "due_time": order.due_time.strftime("%Y-%m-%d %H:%M:%S")} for order in orders],
         "EC_baseline": BASE_ELEC_COEFF,
         "EC_optimized": optimized_coeff,
         "EC_reduction": reduction_rate,

@@ -38,6 +38,12 @@ public class EnergyPlanVO {
     /** 总能源成本，元 */
     private BigDecimal totalEnergyCost;
 
+    /** Additive read model; persisted status remains available for legacy callers. */
+    private Integer timeInterval;
+    private String measurementType;
+    private String executionStatus;
+    private java.util.Map<String, Object> evidenceSummary;
+
     /** 负荷预测摘要 */
     private LoadForecastVO loadForecast;
 

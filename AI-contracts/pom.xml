@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>com.xq</groupId><artifactId>AI</artifactId><version>1.0-SNAPSHOT</version></parent>
+  <artifactId>AI-contracts</artifactId>
+  <description>纯 Java 服务协议，不包含数据库实体或 Spring Starter</description>
+<dependencies>
+<dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><scope>provided</scope></dependency>
+</dependencies></project>

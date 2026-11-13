@@ -25,13 +25,26 @@ import org.springframework.web.bind.annotation.*;
 public class TaskController {
 
     private final TaskService taskService;
+    private final com.xq.service.impl.RemoteScheduleService remote;
+    private final com.xq.service.AuthService auth;
 
     @Operation(summary = "查询任务状态", description = "根据任务 ID 查询异步任务状态，返回 PENDING / RUNNING / SUCCESS / FAILED")
     @GetMapping("/{taskId}")
     public Result<TaskVO> getTask(
             @Parameter(description = "任务 ID", required = true, example = "1")
-            @PathVariable("taskId") Long taskId) {
-        return taskService.getTask(taskId);
+            @PathVariable("taskId") Long taskId,jakarta.servlet.http.HttpServletRequest request) {
+        var user=auth.currentUser(request.getHeader("Authorization")).getData();
+        return Result.ok(remote.authorizedView(taskId,user.getUserId(),user.getRoles().stream().anyMatch(com.xq.common.constant.UserRole::isAdmin)));
     }
 
+    @PostMapping("/{taskId}/cancel")
+    public Result<TaskVO> cancel(@PathVariable Long taskId,jakarta.servlet.http.HttpServletRequest request) {
+        var user=auth.currentUser(request.getHeader("Authorization")).getData();
+        return remote.cancel(taskId,user.getUserId(),user.getRoles().stream().anyMatch(com.xq.common.constant.UserRole::isAdmin));
+    }
+    @PostMapping("/{taskId}/retry-application")
+    public Result<TaskVO> retry(@PathVariable Long taskId,jakarta.servlet.http.HttpServletRequest request) {
+        var user=auth.currentUser(request.getHeader("Authorization")).getData();
+        return remote.retryApplication(taskId,user.getUserId(),user.getRoles().stream().anyMatch(com.xq.common.constant.UserRole::isAdmin));
+    }
 }

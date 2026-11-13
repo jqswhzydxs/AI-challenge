@@ -9,3 +9,11 @@ target/
 Thumbs.db
 # 日志
 *.log
+
+# Per-deployment credentials and verification captures
+deploy/.env
+deploy/.env.*.local
+
+**/__pycache__/
+*.pyc
+.cache/

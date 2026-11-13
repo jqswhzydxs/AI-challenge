@@ -28,7 +28,7 @@ public class EnergyPlanDetail {
     private BigDecimal output;
     /** 用电量，kWh */
     private BigDecimal electricityConsumption;
-    /** 蒸汽用量，单位待确认 */
+    /** 时段蒸汽用量，t（生成器按元/t计费） */
     private BigDecimal steamConsumption;
     /** 碳排放，tCO2 */
     private BigDecimal carbonEmissionTco2;

@@ -11,7 +11,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * @author XQ
  * @since 1.0.0
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = {"com.xq.web", "com.xq.service", "com.xq.infrastructure"})
 @MapperScan("com.xq.mapper")
 @EnableScheduling
 public class Application {

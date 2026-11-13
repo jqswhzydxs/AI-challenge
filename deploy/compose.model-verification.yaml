@@ -1,0 +1,17 @@
+# Local slow HTTP fixture only. Does not contact any external model service.
+services:
+  model-fixture:
+    image: python:3.14.0-slim-bookworm@sha256:d13fa0424035d290decef3d575cea23d1b7d5952cdf429df8f5542c71e961576
+    command: [python, /fixture/server.py]
+    volumes: [../scripts/verification/slow_model_server.py:/fixture/server.py:ro]
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options: {max-size: 1m, max-file: '2'}
+  agent:
+    environment:
+      AGENT_CHAT_PROVIDER: openai
+      AGENT_LLM_ENABLED: 'true'
+      SPRING_AI_OPENAI_API_KEY: verification-fixture-only
+      SPRING_AI_OPENAI_BASE_URL: http://model-fixture:8000
+      SPRING_AI_OPENAI_CHAT_MODEL: fixture

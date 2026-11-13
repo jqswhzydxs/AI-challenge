@@ -14,6 +14,8 @@ import java.math.BigDecimal;
 @Data
 @Builder
 public class RealtimeDataPointVO {
+    private String source;
+
 
     /** 时间戳 */
     private String timestamp;

@@ -1,0 +1,2 @@
+ALTER TABLE algorithm_result_receipt ADD COLUMN applied_at DATETIME(3) NULL;
+ALTER TABLE plan_derivation_job ADD COLUMN created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),ADD COLUMN completed_at DATETIME(3) NULL;

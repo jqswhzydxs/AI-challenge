@@ -97,47 +97,22 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     private final EvaluationMetricMapper evaluationMetricMapper;
     private final MpcRealtimeControlMapper mpcRealtimeControlMapper;
     private TaskExecutor algorithmTaskExecutor;
+    private com.xq.service.agent.EnergyEvidenceService energyEvidenceService;
+
+    @Autowired
+    public void setEnergyEvidenceService(com.xq.service.agent.EnergyEvidenceService service) {
+        this.energyEvidenceService = service;
+    }
 
     @Autowired(required = false)
     public void setAlgorithmTaskExecutor(@Qualifier("algorithmTaskExecutor") TaskExecutor algorithmTaskExecutor) {
         this.algorithmTaskExecutor = algorithmTaskExecutor;
     }
 
-    /**
-     * 每天凌晨 1 点扫描，把方案日期早于今天的非已完成能源方案标记为已完成。
-     */
-    @Scheduled(cron = "${energy-plan.auto-complete.cron:0 0 1 * * ?}")
-    public void autoMarkPastEnergyPlansCompleted() {
-        LocalDate today = LocalDate.now();
-        int rows = energyPlanMapper.update(null,
-                new LambdaUpdateWrapper<EnergyPlan>()
-                        .lt(EnergyPlan::getPlanDate, today)
-                        .ne(EnergyPlan::getStatus, TaskStatus.SUCCESS)
-                        .set(EnergyPlan::getStatus, TaskStatus.SUCCESS)
-        );
-        if (rows > 0) {
-            log.info("已将 {} 条历史能源方案标记为已完成", rows);
-        }
-    }
+    /** Compatibility hook: elapsed dates cannot establish production execution. */
+    public void autoMarkPastEnergyPlansCompleted() { }
 
-    /**
-     * 查询兜底：历史能源方案（日期早于今天）应为已完成；今天及未来不应为已完成。
-     */
-    private void ensureEnergyPlanStatusCorrect(EnergyPlan plan) {
-        if (plan == null || plan.getPlanDate() == null) {
-            return;
-        }
-        LocalDate today = LocalDate.now();
-        if (plan.getPlanDate().isBefore(today)
-                && !TaskStatus.SUCCESS.equals(plan.getStatus())) {
-            plan.setStatus(TaskStatus.SUCCESS);
-            energyPlanMapper.updateById(plan);
-        } else if (!plan.getPlanDate().isBefore(today)
-                && TaskStatus.SUCCESS.equals(plan.getStatus())) {
-            plan.setStatus(TaskStatus.RUNNING);
-            energyPlanMapper.updateById(plan);
-        }
-    }
+    private void ensureEnergyPlanStatusCorrect(EnergyPlan plan) { }
 
     @Override
     public Result<TaskVO> generate(EnergyPlanGenerateDTO dto) {
@@ -240,8 +215,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
             }
 
             // 今天及未来的方案标记为执行中，只有历史日期才显示已完成
-            plan.setStatus(planDate.isBefore(LocalDate.now())
-                    ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
+            plan.setStatus(TaskStatus.SUCCESS);
             energyPlanMapper.updateById(plan);
             markTaskSuccess(task, plan.getId(), "能源运行方案已生成");
             return plan;
@@ -360,7 +334,10 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
 
     private Long equipmentId(Map<String, Object> constraints) {
         Object value = constraints != null ? constraints.get("equipmentId") : null;
-        return value != null ? Long.valueOf(value.toString()) : 1L;
+        if (value != null) return Long.valueOf(value.toString());
+        var configured = energyEquipmentMapper.selectOne(new LambdaQueryWrapper<EnergyEquipment>()
+                .eq(EnergyEquipment::getEquipmentType, "BOILER").orderByAsc(EnergyEquipment::getId).last("LIMIT 1"));
+        return configured == null ? 1L : configured.getId();
     }
 
     private BigDecimal deriveOutput(BigDecimal electricity) {
@@ -440,6 +417,10 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .build();
     }
 
+    private BigDecimal knownScale(BigDecimal value, int scale) {
+        return value == null ? null : value.setScale(scale, RoundingMode.HALF_UP);
+    }
+
     private BigDecimal scale(BigDecimal value, int scale) {
         return value(value).setScale(scale, RoundingMode.HALF_UP);
     }
@@ -494,20 +475,23 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                         .last("LIMIT 1")
         );
         List<EnergyDeviceStatusVO> records = equipments.stream().map(equipment -> {
-            BigDecimal currentOutput = latestMpc != null ? mpcOutputForEquipment(equipment, latestMpc) : BigDecimal.ZERO;
-            BigDecimal maxOutput = value(equipment.getMaxOutput());
-            BigDecimal loadRate = percent(currentOutput, maxOutput);
+            BigDecimal currentOutput = latestMpc != null ? mpcOutputForEquipment(equipment, latestMpc) : null;
+            BigDecimal maxOutput = equipment.getMaxOutput();
+            BigDecimal loadRate = currentOutput == null || maxOutput == null || maxOutput.signum() <= 0
+                    ? null : percent(currentOutput, maxOutput);
             return EnergyDeviceStatusVO.builder()
                     .equipmentId(equipment.getId())
                     .equipmentCode(equipment.getEquipmentCode())
                     .equipmentName(equipment.getEquipmentName())
                     .equipmentType(equipment.getEquipmentType())
                     .status(equipment.getStatus() != null ? equipment.getStatus() : inferEquipmentStatus(loadRate))
-                    .currentOutput(scale(currentOutput, 2))
-                    .maxOutput(scale(maxOutput, 2))
-                    .loadRate(scale(loadRate, 2))
-                    .efficiency(scale(equipment.getEfficiency(), 2))
-                    .warningLevel(warningLevel(loadRate))
+                    .outputUnit("BOILER".equalsIgnoreCase(equipment.getEquipmentType()) || "TURBINE".equalsIgnoreCase(equipment.getEquipmentType()) ? "MW" : "UNKNOWN")
+                    .measurementType("MODEL_CONTROL_COMMAND")
+                    .currentOutput(currentOutput == null ? null : scale(currentOutput, 2))
+                    .maxOutput(maxOutput == null ? null : scale(maxOutput, 2))
+                    .loadRate(loadRate == null ? null : scale(loadRate, 2))
+                    .efficiency(equipment.getEfficiency())
+                    .warningLevel(loadRate == null ? "UNKNOWN" : warningLevel(loadRate))
                     .build();
         }).collect(Collectors.toList());
         return Result.ok(records);
@@ -519,19 +503,11 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
      */
     private BigDecimal mpcOutputForEquipment(EnergyEquipment equipment, MpcRealtimeControl mpc) {
         String code = equipment.getEquipmentCode();
-        if (code == null) {
-            return BigDecimal.ZERO;
-        }
-        if (code.contains("BOILER")) {
-            return value(mpc.getBoilerLoadMw());
-        }
-        if (code.contains("TURBINE")) {
-            return value(mpc.getTurbineOutputMw());
-        }
-        if (code.contains("GRID")) {
-            return value(mpc.getGridPurchaseKwh());
-        }
-        return BigDecimal.ZERO;
+        if (code == null) return null;
+        if (code.contains("BOILER")) return mpc.getBoilerLoadMw();
+        if (code.contains("TURBINE")) return mpc.getTurbineOutputMw();
+        // GRID stores kWh and has no known control interval; do not compare it with a power capacity.
+        return null;
     }
 
     @Override
@@ -545,13 +521,13 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 EnergyLoadForecastPointVO.builder()
                         .timestamp(detail.getTimestamp())
                         .hourIndex(detail.getTimestamp() != null ? detail.getTimestamp().getHour() : null)
-                        .electricityLoad(scale(detail.getElectricityConsumption(), 2))
-                        .steamLoad(scale(detail.getSteamConsumption(), 2))
+                        .electricityLoad(com.xq.service.metrics.EnergyMetrics.averageRate(detail.getElectricityConsumption(), plan.getTimeInterval()))
+                        .steamLoad(com.xq.service.metrics.EnergyMetrics.averageRate(detail.getSteamConsumption(), plan.getTimeInterval()))
                         .energyCost(scale(detail.getEnergyCost(), 2))
                         .build()
         ).collect(Collectors.toList());
         EnergyLoadForecastVO vo = EnergyLoadForecastVO.builder()
-                .summary(loadForecast(details))
+                .summary(loadForecast(plan, details))
                 .points(points)
                 .build();
         return Result.ok(vo);
@@ -591,16 +567,16 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     public Result<EnergyAnalysisVO> getAnalysis(PageQueryDTO query) {
         List<EnergyRealtimeData> records = realtimeRecords(query);
         EvaluationMetric latestMetric = latestMetric();
-        BigDecimal totalElectricity = sum(records.stream().map(EnergyRealtimeData::getElectricityConsumption).toList());
-        BigDecimal totalSteam = sum(records.stream().map(EnergyRealtimeData::getSteamConsumption).toList());
-        BigDecimal totalCarbon = sum(records.stream().map(EnergyRealtimeData::getCarbonEmissionTco2).toList());
+        BigDecimal totalElectricity = com.xq.service.metrics.EnergyMetrics.completeSum(records.stream().map(EnergyRealtimeData::getElectricityConsumption).toList());
+        BigDecimal totalSteam = com.xq.service.metrics.EnergyMetrics.completeSum(records.stream().map(EnergyRealtimeData::getSteamConsumption).toList());
+        BigDecimal totalCarbon = com.xq.service.metrics.EnergyMetrics.completeSum(records.stream().map(EnergyRealtimeData::getCarbonEmissionTco2).toList());
         BigDecimal mape = latestMetric != null ? latestMetric.getMape() : null;
         return Result.ok(EnergyAnalysisVO.builder()
                 .sampleCount((long) records.size())
-                .totalElectricityConsumption(scale(totalElectricity, 2))
-                .totalSteamConsumption(scale(totalSteam, 2))
-                .totalCarbonEmissionTco2(scale(totalCarbon, 4))
-                .totalEnergyCost(scale(estimateRealtimeCost(records), 2))
+                .totalElectricityConsumption(knownScale(totalElectricity, 2))
+                .totalSteamConsumption(knownScale(totalSteam, 2))
+                .totalCarbonEmissionTco2(knownScale(totalCarbon, 4))
+                .totalEnergyCost(knownScale(totalElectricity == null || totalSteam == null ? null : estimateRealtimeCost(records), 2))
                 .avgLaggingPowerFactor(avg(records.stream().map(EnergyRealtimeData::getLaggingPowerFactor).toList(), 4))
                 .avgLeadingPowerFactor(avg(records.stream().map(EnergyRealtimeData::getLeadingPowerFactor).toList(), 4))
                 .mape(mape)
@@ -617,11 +593,11 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         List<EnergyTrendPointVO> points = stats.stream()
                 .map(stat -> EnergyTrendPointVO.builder()
                         .date(stat.getStatDate())
-                        .totalEnergyKgce(scale(stat.getTotalEnergyKgce(), 2))
-                        .energyCost(scale(stat.getEnergyCost(), 2))
-                        .costSaving(scale(stat.getCostSaving(), 2))
-                        .carbonReduction(scale(stat.getCarbonReduction(), 4))
-                        .productionOutput(scale(stat.getProductionOutput(), 2))
+                        .totalEnergyKgce(knownScale(stat.getTotalEnergyKgce(), 2))
+                        .energyCost(knownScale(stat.getEnergyCost(), 2))
+                        .costSaving(knownScale(stat.getCostSaving(), 2))
+                        .carbonReduction(knownScale(stat.getCarbonReduction(), 4))
+                        .productionOutput(knownScale(stat.getProductionOutput(), 2))
                         .build())
                 .collect(Collectors.toList());
         return Result.ok(EnergyTrendVO.builder().points(points).build());
@@ -630,21 +606,17 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
     @Override
     public Result<EnergyCarbonReductionVO> getCarbonReduction(PageQueryDTO query) {
         List<ReportStatistic> stats = reportStats(query);
-        BigDecimal cumulative = BigDecimal.ZERO;
+        BigDecimal cumulative = stats.isEmpty() ? null : BigDecimal.ZERO;
         List<EnergyCarbonReductionPointVO> points = new ArrayList<>();
         for (ReportStatistic stat : stats) {
-            BigDecimal carbonReduction = value(stat.getCarbonReduction());
-            cumulative = cumulative.add(carbonReduction);
-            points.add(EnergyCarbonReductionPointVO.builder()
-                    .date(stat.getStatDate())
-                    .carbonReduction(scale(carbonReduction, 4))
-                    .cumulativeCarbonReduction(scale(cumulative, 4))
-                    .build());
+            BigDecimal carbonReduction = stat.getCarbonReduction();
+            cumulative = cumulative == null || carbonReduction == null ? null : cumulative.add(carbonReduction);
+            points.add(EnergyCarbonReductionPointVO.builder().date(stat.getStatDate())
+                    .carbonReduction(knownScale(carbonReduction, 4))
+                    .cumulativeCarbonReduction(knownScale(cumulative, 4)).build());
         }
-        return Result.ok(EnergyCarbonReductionVO.builder()
-                .totalCarbonReduction(scale(cumulative, 4))
-                .points(points)
-                .build());
+        return Result.ok(EnergyCarbonReductionVO.builder().totalCarbonReduction(knownScale(cumulative, 4))
+                .points(points).build());
     }
 
     private EnergyPlanVO toEnergyPlanVO(EnergyPlan plan, boolean includeDetails) {
@@ -664,6 +636,8 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .electricityConsumption(d.getElectricityConsumption())
                 .steamConsumption(d.getSteamConsumption())
                 .carbonEmissionTco2(d.getCarbonEmissionTco2())
+                .averagePowerKw(com.xq.service.metrics.EnergyMetrics.averageRate(d.getElectricityConsumption(), plan.getTimeInterval()))
+                .steamFlowTonnesPerHour(com.xq.service.metrics.EnergyMetrics.averageRate(d.getSteamConsumption(), plan.getTimeInterval()))
                 .energyCost(d.getEnergyCost())
                 .build()).collect(Collectors.toList()) : null;
 
@@ -672,10 +646,16 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .taskId(plan.getTaskId())
                 .planDate(plan.getPlanDate())
                 .status(plan.getStatus())
+                .timeInterval(plan.getTimeInterval())
+                .measurementType("DERIVED_FROM_PLAN")
+                .executionStatus("UNKNOWN")
+                .evidenceSummary(energyEvidenceService == null
+                        ? com.xq.service.metrics.EnergyMetrics.summarize(plan, details)
+                        : energyEvidenceService.describe(plan, details))
                 .electricityCost(plan.getElectricityCost())
                 .steamCost(plan.getSteamCost())
                 .totalEnergyCost(plan.getTotalEnergyCost())
-                .loadForecast(loadForecast(details))
+                .loadForecast(loadForecast(plan, details))
                 .optimizationResult(optimizationResult(plan, details))
                 .strategies(strategies(details))
                 .pricePolicy(pricePolicy(plan.getElectricPriceMode()))
@@ -785,7 +765,7 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                 .filter(value -> value != null)
                 .toList();
         if (present.isEmpty()) {
-            return BigDecimal.ZERO;
+            return null;
         }
         return sum(present).divide(new BigDecimal(present.size()), scale, RoundingMode.HALF_UP);
     }
@@ -833,81 +813,32 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
         return "LOW";
     }
 
-    private LoadForecastVO loadForecast(List<EnergyPlanDetail> details) {
-        if (details == null || details.isEmpty()) {
-            return LoadForecastVO.builder()
-                    .peakLoad(BigDecimal.ZERO)
-                    .valleyLoad(BigDecimal.ZERO)
-                    .avgLoad(BigDecimal.ZERO)
-                    .build();
-        }
-        EnergyPlanDetail peak = details.stream()
-                .max(Comparator.comparing(item -> value(item.getElectricityConsumption())))
-                .orElse(details.get(0));
-        EnergyPlanDetail valley = details.stream()
-                .min(Comparator.comparing(item -> value(item.getElectricityConsumption())))
-                .orElse(details.get(0));
-        BigDecimal totalLoad = sum(details.stream()
-                .map(EnergyPlanDetail::getElectricityConsumption)
-                .toList());
-        BigDecimal avgLoad = totalLoad.divide(new BigDecimal(details.size()), 2, RoundingMode.HALF_UP);
-        return LoadForecastVO.builder()
-                .peakHour(formatHourRange(peak.getTimestamp()))
-                .peakLoad(scale(peak.getElectricityConsumption(), 2))
-                .valleyHour(formatHourRange(valley.getTimestamp()))
-                .valleyLoad(scale(valley.getElectricityConsumption(), 2))
-                .avgLoad(avgLoad)
-                .build();
+    private LoadForecastVO loadForecast(EnergyPlan plan, List<EnergyPlanDetail> details) {
+        var summary = com.xq.service.metrics.EnergyMetrics.summarize(plan, details);
+        var periods = (List<Map<String, Object>>) summary.get("peakPeriods");
+        String peakHour = periods.isEmpty() ? null :
+                ((LocalDateTime) periods.get(0).get("start")).toLocalTime().toString() + "-"
+                + ((LocalDateTime) periods.get(0).get("end")).toLocalTime().toString();
+        return LoadForecastVO.builder().peakHour(peakHour)
+                .peakLoad((BigDecimal) summary.get("peakPowerKw"))
+                .avgLoad((BigDecimal) summary.get("avgPowerKw"))
+                .valleyLoad((BigDecimal) summary.get("valleyPowerKw"))
+                .valleyHour(summary.get("valleyPeriodStart") instanceof LocalDateTime start
+                        && plan.getTimeInterval() != null
+                        ? start.toLocalTime().toString() + "-" + start.plusMinutes(plan.getTimeInterval()).toLocalTime().toString()
+                        : null).build();
     }
 
+
     private EnergyOptimizationResultVO optimizationResult(EnergyPlan plan, List<EnergyPlanDetail> details) {
-        BigDecimal totalCost = value(plan.getTotalEnergyCost());
-        if (totalCost.compareTo(BigDecimal.ZERO) == 0 && details != null) {
-            totalCost = sum(details.stream().map(EnergyPlanDetail::getEnergyCost).toList());
-        }
-        BigDecimal originalCost = estimateOriginalCost(totalCost, details);
-        BigDecimal estimatedSavings = percent(originalCost.subtract(totalCost), originalCost);
-        return EnergyOptimizationResultVO.builder()
-                .estimatedSavings(scale(nonNegative(estimatedSavings), 2))
-                .totalCost(scale(totalCost, 2))
-                .originalCost(scale(originalCost, 2))
-                .peakShavingRate(scale(peakShavingRate(details), 2))
-                .build();
+        // No independently measured baseline or counterfactual simulation is persisted.
+        return EnergyOptimizationResultVO.builder().totalCost(plan.getTotalEnergyCost()).build();
     }
 
     private List<EnergyStrategyVO> strategies(List<EnergyPlanDetail> details) {
-        LoadForecastVO forecast = loadForecast(details);
-        List<EnergyStrategyVO> items = new ArrayList<>();
-        items.add(EnergyStrategyVO.builder()
-                .type("PEAK_SHIFTING")
-                .title("峰段负荷削减")
-                .description("峰价时段优先降低非关键设备负荷，减少高电价区间外购电。")
-                .timeRange("08:00-22:00")
-                .impactLevel("HIGH")
-                .build());
-        items.add(EnergyStrategyVO.builder()
-                .type("VALLEY_PRODUCTION")
-                .title("谷段增产蓄能")
-                .description("将可平移生产任务和蓄热负荷安排到谷价时段，降低单位能耗成本。")
-                .timeRange("00:00-08:00,22:00-24:00")
-                .impactLevel("MEDIUM")
-                .build());
-        items.add(EnergyStrategyVO.builder()
-                .type("LOAD_BALANCE")
-                .title("平衡小时负荷")
-                .description("围绕峰值 " + value(forecast.getPeakLoad()) + " kWh 和谷值 "
-                        + value(forecast.getValleyLoad()) + " kWh 调整负荷曲线。")
-                .timeRange("全天")
-                .impactLevel("MEDIUM")
-                .build());
-        items.add(EnergyStrategyVO.builder()
-                .type("CARBON_CONTROL")
-                .title("碳排联动控制")
-                .description("对高电耗小时同步监控碳排，优先使用低成本、低碳能源组合。")
-                .timeRange("全天")
-                .impactLevel("LOW")
-                .build());
-        return items;
+        return List.of(EnergyStrategyVO.builder().type("REVIEW_REQUIRED").title("按成本贡献复核")
+                .description("先比较电费与蒸汽费用占比，再核对蒸汽单价、设备效率与用量；调整须满足交期、容量、爬坡与启停约束。未重算，暂无收益估计。")
+                .timeRange("方案覆盖时段").impactLevel("UNKNOWN").build());
     }
 
     private PricePolicyVO pricePolicy(String mode) {
@@ -934,44 +865,6 @@ public class EnergyPlanServiceImpl implements EnergyPlanService {
                                 .build()
                 ))
                 .build();
-    }
-
-    private BigDecimal estimateOriginalCost(BigDecimal totalCost, List<EnergyPlanDetail> details) {
-        BigDecimal base = value(totalCost);
-        if (base.compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal peakPremium = BigDecimal.ZERO;
-        if (details != null) {
-            for (EnergyPlanDetail detail : details) {
-                int hour = detail.getTimestamp() != null ? detail.getTimestamp().getHour() : 0;
-                if (hour >= 8 && hour < 22) {
-                    peakPremium = peakPremium.add(value(detail.getElectricityConsumption())
-                            .multiply(new BigDecimal("0.08")));
-                }
-            }
-        }
-        BigDecimal uplift = peakPremium.compareTo(BigDecimal.ZERO) > 0
-                ? peakPremium
-                : base.multiply(new BigDecimal("0.08"));
-        return base.add(uplift);
-    }
-
-    private BigDecimal peakShavingRate(List<EnergyPlanDetail> details) {
-        if (details == null || details.isEmpty()) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal peak = details.stream()
-                .map(EnergyPlanDetail::getElectricityConsumption)
-                .map(this::value)
-                .max(BigDecimal::compareTo)
-                .orElse(BigDecimal.ZERO);
-        if (peak.compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
-        }
-        BigDecimal avg = sum(details.stream().map(EnergyPlanDetail::getElectricityConsumption).toList())
-                .divide(new BigDecimal(details.size()), 6, RoundingMode.HALF_UP);
-        return percent(peak.subtract(avg), peak);
     }
 
     private BigDecimal percent(BigDecimal numerator, BigDecimal denominator) {

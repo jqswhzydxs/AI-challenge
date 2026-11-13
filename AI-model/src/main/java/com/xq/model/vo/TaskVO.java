@@ -30,6 +30,11 @@ public class TaskVO {
 
     /** 任务状态 */
     private String status;
+    private String executionMode;
+    private String requestId;
+    private String computeStatus;
+    private String applicationStatus;
+    private String derivationStatus;
 
     /** 进度 0-100 */
     private Integer progress;

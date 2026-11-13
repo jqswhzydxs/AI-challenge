@@ -90,7 +90,11 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     private final EvaluationMetricMapper evaluationMetricMapper;
     private final ProductionLineMapper productionLineMapper;
     private final ProductionOrderMapper productionOrderMapper;
+    @Value("${algorithm.execution-mode:LOCAL}") private String executionMode;
     private TaskExecutor algorithmTaskExecutor;
+    private ScheduleResultApplicationService resultApplicationService;
+    @Value("${schedule.legacy-auto-enabled:true}") private boolean legacyAutoEnabled;
+    @Autowired public void setResultApplicationService(ScheduleResultApplicationService service) {this.resultApplicationService=service;}
     private PlanAutoGenerationService planAutoGenerationService;
     private RealtimeControlService realtimeControlService;
     private EnergyRealtimeDataMapper energyRealtimeDataMapper;
@@ -286,6 +290,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     @Scheduled(fixedDelayString = "${schedule.auto-generate.interval-ms:1800000}",
             initialDelayString = "${schedule.auto-generate.initial-delay-ms:60000}")
     public void autoGeneratePendingSchedules() {
+        if (!legacyAutoEnabled || "REMOTE".equalsIgnoreCase(executionMode)) return;
         LocalDate today = LocalDate.now();
 
         // 把历史排产方案标记为已完成（已完成方案不再参与后续自动能源派生）
@@ -316,39 +321,10 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         }
     }
 
-    /**
-     * 将排产日期早于今天的非已完成方案统一标记为已完成。
-     */
-    private void markPastSchedulesCompleted(LocalDate today) {
-        int rows = schedulePlanMapper.update(null,
-                new LambdaUpdateWrapper<ProductionSchedulePlan>()
-                        .lt(ProductionSchedulePlan::getScheduleDate, today)
-                        .ne(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
-                        .set(ProductionSchedulePlan::getStatus, TaskStatus.SUCCESS)
-        );
-        if (rows > 0) {
-            log.info("已将 {} 条历史排产方案标记为已完成", rows);
-        }
-    }
+    /** Kept for callers; do not bulk-rewrite business state based on the clock. */
+    private void markPastSchedulesCompleted(LocalDate today) { }
 
-    /**
-     * 查询兜底：历史方案（日期早于今天）应为已完成；今天及未来不应为已完成。
-     */
-    private void ensureScheduleStatusCorrect(ProductionSchedulePlan plan) {
-        if (plan == null || plan.getScheduleDate() == null) {
-            return;
-        }
-        LocalDate today = LocalDate.now();
-        if (plan.getScheduleDate().isBefore(today)
-                && !TaskStatus.SUCCESS.equals(plan.getStatus())) {
-            plan.setStatus(TaskStatus.SUCCESS);
-            schedulePlanMapper.updateById(plan);
-        } else if (!plan.getScheduleDate().isBefore(today)
-                && TaskStatus.SUCCESS.equals(plan.getStatus())) {
-            plan.setStatus(TaskStatus.RUNNING);
-            schedulePlanMapper.updateById(plan);
-        }
-    }
+    private void ensureScheduleStatusCorrect(ProductionSchedulePlan plan) { }
 
     @Override
     public Result<TaskVO> generateFromRawData(byte[] fileBytes, String originalFilename, String scheduleDate) {
@@ -426,8 +402,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
             }
 
             // 今天及未来的方案标记为执行中，只有历史日期才显示已完成
-            plan.setStatus(scheduleDate.isBefore(LocalDate.now())
-                    ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
+            plan.setStatus(TaskStatus.SUCCESS);
             schedulePlanMapper.updateById(plan);
             markTaskSuccess(task, plan.getId(), "排产方案已生成");
         } catch (RuntimeException e) {
@@ -538,33 +513,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                     : root;
 
             phase = "导入排产方案";
-            Result<ImportPlanResultVO> importResult = importDailyPlan(dailyPlan);
-            ImportPlanResultVO importVO = importResult.getData();
-            Long scheduleId = importVO != null ? importVO.getScheduleId() : null;
-            markOrdersScheduled(orders, orderScheduleDate);
-
-            String energyImportWarning = null;
-            Object algorithmEnergyPlan = root.get("energy_plan");
-            if (algorithmEnergyPlan != null) {
-                phase = "import algorithm energy_plan";
-                try {
-                    importAlgorithmEnergyPlan(algorithmEnergyPlan, scheduleId, task.getId(), dailyPlan);
-                    if (planAutoGenerationService != null) {
-                        planAutoGenerationService.autoGenerateAfterScheduleImported(scheduleId);
-                    }
-                } catch (RuntimeException energyException) {
-                    energyImportWarning = trimMessage(energyException.getMessage());
-                }
-            }
-
-            // 算法生成的 realtime_control 是一次性模拟快照，不应入库到 mpc_realtime_control 表。
-            // 原因：其 timestamp 由 generate_plan.py 拼接为「计划日 + 当前时分秒」，
-            // 若计划日为次日，control_date 会落在未来，污染滚动 MPC 的实时数据
-            // （getLatest 按 control_date DESC 排序会把这条未来记录永远排在最前）。
-            // 该数据已随 outputJson 存入 algorithm_task.algorithm_response_json 供查阅，
-            // 真实控制指令只应来自 RealtimeMpcControlTask 每分钟的滚动计算。
-            task.setAlgorithmResponseJson(outputJson);
-            markTaskSuccess(task, scheduleId, "算法方案已生成并入库");
+            resultApplicationService.applyExisting(task, java.util.UUID.randomUUID().toString(), dailyPlan, orders, outputJson);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             RuntimeException wrapped = new BusinessException(500, "算法执行被中断，阶段: " + phase);
@@ -605,7 +554,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         plan.setTaskId(taskId);
         plan.setSourceScheduleId(scheduleId);
         plan.setPlanDate(planDate);
-        plan.setStatus(planDate.isBefore(LocalDate.now()) ? TaskStatus.SUCCESS : TaskStatus.RUNNING);
+        plan.setStatus(TaskStatus.SUCCESS);
         plan.setObjective(textValue(energyPlanJson, "objective", "cost_energy_carbon_executability"));
         plan.setElectricPriceMode(textValue(energyPlanJson, "electric_price_mode", "PEAK_VALLEY"));
         plan.setTimeInterval(intValue(energyPlanJson.get("time_interval"), 60));
@@ -774,141 +723,8 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     }
 
     @Override
-    @Transactional
-    public Result<ImportPlanResultVO> importDailyPlan(Map<String, Object> dailyPlanJson) {
-        if (dailyPlanJson == null || dailyPlanJson.isEmpty()) {
-            throw new BusinessException(400, "请求体不能为空，请粘贴 daily_plan_v3.2.json 内容");
-        }
-        String timestamp = (String) dailyPlanJson.get("timestamp");
-        if (timestamp == null || timestamp.trim().isEmpty()) {
-            throw new BusinessException(400, "缺少字段: timestamp");
-        }
-        Object planHorizonValue = dailyPlanJson.get("plan_horizon");
-        if (!(planHorizonValue instanceof Number)) {
-            throw new BusinessException(400, "缺少字段或字段类型错误: plan_horizon");
-        }
-        Integer planHorizon = ((Number) planHorizonValue).intValue();
-        String planUnit = (String) dailyPlanJson.get("unit");
-        String dataGranularity = (String) dailyPlanJson.get("data_granularity");
-        BigDecimal ecBaseline = getDecimalAny(dailyPlanJson, ALGORITHM_EC_BASELINE, "EC_baseline", "ecBaseline", "elec_coefficient");
-        BigDecimal ecOptimized = getDecimalAny(dailyPlanJson, ALGORITHM_EC_OPTIMIZED, "EC_optimized", "ecOptimized");
-        BigDecimal ecReduction = getDecimalAny(dailyPlanJson, ALGORITHM_EC_REDUCTION, "EC_reduction", "ecReduction");
-        BigDecimal optimalTemperature = getDecimalAny(dailyPlanJson, null, "optimal_temperature", "optimalTemperature");
-        BigDecimal optimalSpeed = getDecimalAny(dailyPlanJson, null, "optimal_speed", "optimalSpeed");
-        BigDecimal totalDemand = getDecimal(dailyPlanJson, "total_demand", null);
-        BigDecimal totalProduction = getDecimal(dailyPlanJson, "total_production", null);
-        BigDecimal totalEnergy = getDecimal(dailyPlanJson, "total_energy", null);
-
-        if (planHorizon != 24) {
-            throw new BusinessException(400, "plan_horizon 必须为 24");
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> schedule = (List<Map<String, Object>>) dailyPlanJson.get("schedule");
-        if (schedule == null || schedule.size() != 24) {
-            throw new BusinessException(400, "schedule 必须包含 24 条记录");
-        }
-
-        if (totalDemand == null) {
-            totalDemand = schedule.stream()
-                    .map(item -> getRequiredDecimal(item, "demand"))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-        }
-        if (totalProduction == null) {
-            totalProduction = schedule.stream()
-                    .map(item -> getRequiredDecimal(item, "production"))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-        }
-        if (ecOptimized == null && totalEnergy != null && totalProduction.compareTo(BigDecimal.ZERO) > 0) {
-            ecOptimized = totalEnergy.divide(totalProduction, 6, java.math.RoundingMode.HALF_UP);
-        }
-        if (ecOptimized == null) {
-            throw new BusinessException(400, "缺少 EC_optimized，无法计算小时预测电耗");
-        }
-
-        // 创建算法任务
-        AlgorithmTask task = new AlgorithmTask();
-        task.setTaskType(TaskType.PRODUCTION_SCHEDULE);
-        task.setStatus(TaskStatus.SUCCESS);
-        task.setProgress(100);
-        task.setAlgorithmResponseJson(JSON.toJSONString(dailyPlanJson));
-        task.setResultFileName("daily_plan_v3.2.json");
-        algorithmTaskMapper.insert(task);
-
-        // 创建排产方案主表
-        ProductionSchedulePlan plan = new ProductionSchedulePlan();
-        plan.setTaskId(task.getId());
-        plan.setScheduleName("日级排产方案");
-        LocalDateTime parsedStartTime = LocalDateTime.parse(timestamp, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-        plan.setScheduleDate(parsedStartTime.toLocalDate());
-        plan.setPlanStartTime(parsedStartTime);
-        plan.setPlanHorizon(planHorizon);
-        plan.setPlanUnit(planUnit != null ? planUnit : "hour");
-        plan.setDataGranularity(dataGranularity != null ? dataGranularity : "1 minute");
-        plan.setStatus(TaskStatus.SUCCESS);
-        // 新版 JSON：以 EC_optimized 作为小时预测电耗计算系数，elecCoefficient 仅作为兼容旧前端字段返回。
-        plan.setElecCoefficient(ecOptimized);
-        plan.setEcBaseline(ecBaseline);
-        plan.setEcOptimized(ecOptimized);
-        plan.setEcReduction(ecReduction);
-        plan.setOptimalTemperature(optimalTemperature);
-        plan.setOptimalSpeed(optimalSpeed);
-        plan.setTotalDemand(totalDemand);
-        plan.setTotalProduction(totalProduction);
-        plan.setTotalEnergy(totalEnergy);
-        plan.setRawPlanJson(JSON.toJSONString(dailyPlanJson));
-        schedulePlanMapper.insert(plan);
-
-        // 关联任务和结果
-        task.setResultId(plan.getId());
-        algorithmTaskMapper.updateById(task);
-
-        // 创建明细 —— 新版 JSON 无 elec_forecast，用 production * EC_optimized 计算
-        LocalDateTime planStart = parsedStartTime;
-        for (Map<String, Object> item : schedule) {
-            int hour = ((Number) item.get("hour")).intValue();
-            LocalDateTime startTime = planStart.plusHours(hour);
-            LocalDateTime endTime = startTime.plusHours(1);
-            BigDecimal production = getRequiredDecimal(item, "production");
-            BigDecimal demand = getRequiredDecimal(item, "demand");
-
-            ProductionScheduleDetail detail = new ProductionScheduleDetail();
-            detail.setScheduleId(plan.getId());
-            detail.setHourIndex(hour);
-            detail.setStartTime(startTime);
-            detail.setEndTime(endTime);
-            detail.setDemand(demand);
-            detail.setProduction(production);
-            // 新版无 elec_forecast：用 production * EC_optimized 推导
-            BigDecimal elecForecast = getDecimal(item, "elec_forecast",
-                    ecOptimized != null ? production.multiply(ecOptimized) : null);
-            detail.setElecForecast(elecForecast);
-            detail.setConflictFlag(0);
-            scheduleDetailMapper.insert(detail);
-        }
-
-        EvaluationMetric metric = new EvaluationMetric();
-        metric.setBizType("SCHEDULE");
-        metric.setBizId(plan.getId());
-        metric.setMape(getDecimalAny(dailyPlanJson, ALGORITHM_MAPE, "MAPE", "mape"));
-        metric.setEcBefore(ecBaseline);
-        metric.setEcAfter(ecOptimized);
-        metric.setEr(ALGORITHM_ER);
-        metric.setCostSaving(null);
-        metric.setCarbonReduction(null);
-        metric.setCalculateTime(LocalDateTime.now());
-        evaluationMetricMapper.insert(metric);
-
-        if (planAutoGenerationService != null) {
-            planAutoGenerationService.autoGenerateAfterScheduleImported(plan.getId());
-        }
-
-        ImportPlanResultVO vo = ImportPlanResultVO.builder()
-                .taskId(task.getId())
-                .scheduleId(plan.getId())
-                .detailCount(schedule.size())
-                .build();
-        return Result.ok("导入成功", vo);
+    public Result<ImportPlanResultVO> importDailyPlan(Map<String,Object> dailyPlanJson) {
+        return resultApplicationService.manual(dailyPlanJson);
     }
 
     @Override
@@ -985,9 +801,9 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .orElse(null);
         BigDecimal maxEnergySavingsRate = records.stream()
                 .map(ScheduleCompareItemVO::getEnergySavingsRate)
-                .map(this::value)
+                .filter(java.util.Objects::nonNull)
                 .max(BigDecimal::compareTo)
-                .orElse(BigDecimal.ZERO);
+                .orElse(null);
 
         ScheduleCompareVO vo = ScheduleCompareVO.builder()
                 .baselineScheduleId(baseline.getScheduleId())
@@ -1020,7 +836,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                     .demand(d.getDemand())
                     .production(d.getProduction())
                     .elecForecast(d.getElecForecast())
-                    .equipmentLoadRate(d.getEquipmentLoadRate() != null ? d.getEquipmentLoadRate() : avgLoadRate(details))
+                    .equipmentLoadRate(d.getEquipmentLoadRate())
                     .build();
         }).collect(Collectors.toList()) : null;
 
@@ -1038,7 +854,13 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .ecBaseline(plan.getEcBaseline())
                 .ecOptimized(plan.getEcOptimized())
                 .ecReduction(plan.getEcReduction())
-                .energySavingsRate(energySavingsRate(plan))
+                .energySavingsRate(null)
+                .measurementType("PLANNED")
+                .executionStatus("UNKNOWN")
+                .generationStatus(details.isEmpty() ? "UNKNOWN" : "GENERATED")
+                .loadMetricBasis("计划峰均负荷比 = 总计划产量 / (明细时段数 × 最大时段计划产量)；不是设备容量利用率")
+                .deadlineMetricBasis("冻结订单按交期排序累计分配，假设每个排产时段内均匀生产；不代表实际交付")
+                .algorithmInfo(algorithmInfo(plan))
                 .avgLoadRate(avgLoadRate(details))
                 .deadlineCompliance(deadlineCompliance(plan, details))
                 .optimalTemperature(plan.getOptimalTemperature())
@@ -1070,23 +892,23 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         return "智能轧钢产线";
     }
 
-    private BigDecimal energySavingsRate(ProductionSchedulePlan plan) {
-        if (plan.getEcReduction() != null) {
-            return plan.getEcReduction();
-        }
-        BigDecimal baseline = value(plan.getEcBaseline());
-        BigDecimal optimized = plan.getEcOptimized() != null ? plan.getEcOptimized() : plan.getElecCoefficient();
-        if (baseline.compareTo(BigDecimal.ZERO) == 0 || optimized == null) {
-            return BigDecimal.ZERO;
-        }
-        return baseline.subtract(optimized)
-                .multiply(new BigDecimal("100"))
-                .divide(baseline, 2, RoundingMode.HALF_UP);
+    private Map<String, Object> algorithmInfo(ProductionSchedulePlan plan) {
+        Map<String, Object> info = new java.util.LinkedHashMap<>();
+        Map<String, Object> raw = plan.getRawPlanJson() == null ? Map.of() : JSON.parseObject(plan.getRawPlanJson());
+        info.put("solverStatus", raw.getOrDefault("solver_status", "UNKNOWN"));
+        info.put("processSearch", raw.getOrDefault("process_search", "UNKNOWN"));
+        info.put("rawCollectionInterval", raw.getOrDefault("raw_data_granularity", "UNKNOWN"));
+        info.put("calculationInterval", raw.getOrDefault("calculation_granularity", plan.getDataGranularity() == null ? "UNKNOWN" : plan.getDataGranularity()));
+        info.put("outputInterval", "60 min");
+        info.put("demandSource", raw.getOrDefault("demand_source", "UNKNOWN"));
+        info.put("scope", "排产为启发式；fallback 未确认可行性；参数仅为已枚举网格内最优，均非全局最优");
+        info.put("assumptions", "固定线性电耗系数，不含产品质量与温速耦合校验；历史数据未记录搜索配置时显示未知");
+        return info;
     }
 
     private BigDecimal avgLoadRate(List<ProductionScheduleDetail> details) {
         if (details == null || details.isEmpty()) {
-            return BigDecimal.ZERO;
+            return null;
         }
         BigDecimal totalProduction = details.stream()
                 .map(ProductionScheduleDetail::getProduction)
@@ -1098,7 +920,7 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
                 .max(BigDecimal::compareTo)
                 .orElse(BigDecimal.ZERO);
         if (maxProduction.compareTo(BigDecimal.ZERO) == 0) {
-            return BigDecimal.ZERO;
+            return null;
         }
         BigDecimal capacity = maxProduction.multiply(new BigDecimal(details.size()));
         return totalProduction.multiply(new BigDecimal("100"))
@@ -1106,43 +928,12 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
     }
 
     private BigDecimal deadlineCompliance(ProductionSchedulePlan plan, List<ProductionScheduleDetail> details) {
-        if (details == null || details.isEmpty()) {
-            return BigDecimal.ZERO;
-        }
-        List<ProductionOrder> orders = plan != null && plan.getScheduleDate() != null
-                ? selectAllOrdersForScheduleDate(plan.getScheduleDate())
-                : List.of();
-        if (!orders.isEmpty()) {
-            BigDecimal[] cumulativeProduction = new BigDecimal[24];
-            BigDecimal runningProduction = BigDecimal.ZERO;
-            Map<Integer, BigDecimal> productionByHour = details.stream()
-                    .collect(Collectors.toMap(
-                            ProductionScheduleDetail::getHourIndex,
-                            detail -> value(detail.getProduction()),
-                            BigDecimal::add
-                    ));
-            for (int hour = 0; hour < 24; hour++) {
-                runningProduction = runningProduction.add(productionByHour.getOrDefault(hour, BigDecimal.ZERO));
-                cumulativeProduction[hour] = runningProduction;
-            }
-
-            BigDecimal required = BigDecimal.ZERO;
-            long fulfilled = 0;
-            for (ProductionOrder order : orders) {
-                required = required.add(value(order.getPlannedQuantity()));
-                int dueHour = Math.min(Math.max(order.getDueTime().getHour(), 0), 23);
-                if (cumulativeProduction[dueHour].compareTo(required) >= 0) {
-                    fulfilled++;
-                }
-            }
-            return BigDecimal.valueOf(fulfilled).multiply(new BigDecimal("100"))
-                    .divide(BigDecimal.valueOf(orders.size()), 2, RoundingMode.HALF_UP);
-        }
-        long feasible = details.stream()
-                .filter(d -> value(d.getProduction()).compareTo(value(d.getDemand())) >= 0)
-                .count();
-        return new BigDecimal(feasible).multiply(new BigDecimal("100"))
-                .divide(new BigDecimal(details.size()), 2, RoundingMode.HALF_UP);
+        if (plan == null || plan.getRawPlanJson() == null) return null;
+        var raw = JSON.parseObject(plan.getRawPlanJson());
+        if (!(raw.get("order_snapshot") instanceof List<?> orders)) return null;
+        List<Map<String, Object>> frozen = new java.util.ArrayList<>();
+        for (Object order : orders) frozen.add(JSON.parseObject(JSON.toJSONString(order)));
+        return com.xq.service.metrics.PlanDeadlineMetrics.estimate(details, frozen);
     }
 
     private BigDecimal percent(BigDecimal numerator, BigDecimal denominator) {
@@ -1422,13 +1213,11 @@ public class ProductionScheduleServiceImpl implements ProductionScheduleService 
         if (orders == null || orders.isEmpty()) {
             return;
         }
-        LocalDate today = LocalDate.now();
-        boolean isPast = scheduleDate != null && scheduleDate.isBefore(today);
         for (ProductionOrder order : orders) {
             if (order.getId() == null || "COMPLETED".equals(order.getStatus())) {
                 continue;
             }
-            order.setStatus(isPast ? "COMPLETED" : "SCHEDULED");
+            order.setStatus("SCHEDULED");
             productionOrderMapper.updateById(order);
         }
     }

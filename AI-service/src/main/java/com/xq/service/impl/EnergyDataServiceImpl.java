@@ -79,6 +79,7 @@ public class EnergyDataServiceImpl implements EnergyDataService {
         List<EnergyRealtimeData> list = page.getRecords();
         java.util.Collections.reverse(list);
         List<RealtimeDataPointVO> points = list.stream().map(d -> RealtimeDataPointVO.builder()
+                .source(d.getSource())
                 .timestamp(d.getTimestamp() != null ? d.getTimestamp().toString() : null)
                 .electricityConsumption(d.getElectricityConsumption())
                 .steamConsumption(d.getSteamConsumption())
@@ -94,6 +95,8 @@ public class EnergyDataServiceImpl implements EnergyDataService {
                 .build()).collect(Collectors.toList());
 
         RealtimeDataVO vo = RealtimeDataVO.builder()
+                .intervalBasis("REQUEST_HINT_ONLY_NO_RESAMPLING")
+                .quantityIntervalBasis("原始分时用量；采集时段长度未独立记录，请求间隔不作为功率换算依据")
                 .timeInterval(query.getInterval() != null ? query.getInterval() : 15)
                 .points(points)
                 .build();

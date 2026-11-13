@@ -79,14 +79,17 @@ class ProductionScheduleServiceImplTest {
 
         SchedulePlanVO data = service.getPlanDetail(100L).getData();
 
-        assertEquals(new BigDecimal("20.00"), data.getEnergySavingsRate());
+        org.junit.jupiter.api.Assertions.assertNull(data.getEnergySavingsRate());
+        assertEquals("PLANNED", data.getMeasurementType());
+        assertEquals("UNKNOWN", data.getExecutionStatus());
         assertEquals(new BigDecimal("90.00"), data.getAvgLoadRate());
-        assertEquals(new BigDecimal("100.00"), data.getDeadlineCompliance());
+        org.junit.jupiter.api.Assertions.assertNull(data.getDeadlineCompliance());
         assertEquals(2, data.getDetailCount());
         assertNotNull(data.getDetails());
         assertEquals(10L, data.getDetails().get(0).getLineId());
         assertEquals("热轧产线", data.getDetails().get(0).getLineName());
-        assertEquals(new BigDecimal("90.00"), data.getDetails().get(0).getEquipmentLoadRate());
+        org.junit.jupiter.api.Assertions.assertNull(data.getDetails().get(0).getEquipmentLoadRate());
+        org.junit.jupiter.api.Assertions.assertTrue(data.getLoadMetricBasis().contains("不是设备容量"));
     }
 
     @Test
@@ -194,7 +197,7 @@ class ProductionScheduleServiceImplTest {
         assertEquals("SCHEDULE", metricCaptor.getValue().getBizType());
         assertEquals(40L, metricCaptor.getValue().getBizId());
         assertEquals(new BigDecimal("2.50"), metricCaptor.getValue().getMape());
-        verify(planAutoGenerationService).autoGenerateAfterScheduleImported(40L);
+        org.mockito.Mockito.verifyNoInteractions(planAutoGenerationService);
     }
 
     @Test
@@ -219,14 +222,11 @@ class ProductionScheduleServiceImplTest {
                                                   ProductionScheduleDetailMapper scheduleDetailMapper,
                                                   EvaluationMetricMapper evaluationMetricMapper,
                                                   ProductionLineMapper productionLineMapper) {
-        return new ProductionScheduleServiceImpl(
-                algorithmTaskMapper,
-                schedulePlanMapper,
-                scheduleDetailMapper,
-                evaluationMetricMapper,
-                productionLineMapper,
-                mock(ProductionOrderMapper.class)
-        );
+        var service = new ProductionScheduleServiceImpl(algorithmTaskMapper,schedulePlanMapper,scheduleDetailMapper,
+                evaluationMetricMapper,productionLineMapper,mock(ProductionOrderMapper.class));
+        service.setResultApplicationService(new ScheduleResultApplicationService(algorithmTaskMapper,schedulePlanMapper,
+                scheduleDetailMapper,evaluationMetricMapper,mock(ProductionOrderMapper.class),mock(org.springframework.jdbc.core.JdbcTemplate.class)));
+        return service;
     }
 
     private Map<String, Object> dailyPlan() {

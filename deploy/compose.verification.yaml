@@ -1,0 +1,21 @@
+# Explicitly enable only for Worker crash/cancellation demonstrations.
+services:
+  core:
+    environment:
+      SPRING_PROFILES_ACTIVE: verification
+      VERIFICATION_BUSINESS_INSTANT: ${VERIFICATION_BUSINESS_INSTANT:-}
+      ALGORITHM_SCRIPT_FILE: /verification/slow_algorithm.py
+    volumes:
+      - ../scripts/verification/slow_algorithm.py:/verification/slow_algorithm.py:ro
+  algorithm:
+    environment:
+      SPRING_PROFILES_ACTIVE: verification
+      VERIFICATION_BEFORE_TERMINAL_DELAY_MS: ${VERIFICATION_BEFORE_TERMINAL_DELAY_MS:-0}
+      VERIFICATION_AFTER_COMMAND_COMMIT_DELAY_MS: ${VERIFICATION_AFTER_COMMAND_COMMIT_DELAY_MS:-0}
+      ALGORITHM_SCRIPT: /verification/slow_algorithm.py
+      VERIFICATION_DELAY_SECONDS: ${VERIFICATION_DELAY_SECONDS:-6}
+      VERIFICATION_MODE: ${VERIFICATION_MODE:-normal}
+      ALGORITHM_TIMEOUT_SECONDS: ${VERIFICATION_TIMEOUT_SECONDS:-180}
+      ALGORITHM_MAX_ATTEMPTS: '2' 
+    volumes:
+      - ../scripts/verification/slow_algorithm.py:/verification/slow_algorithm.py:ro

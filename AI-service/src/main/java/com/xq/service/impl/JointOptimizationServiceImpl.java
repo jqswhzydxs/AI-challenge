@@ -179,8 +179,8 @@ public class JointOptimizationServiceImpl implements JointOptimizationService {
             BigDecimal costReductionRate = optimizedCost.compareTo(BigDecimal.ZERO) > 0
                     ? percent(baselineCost.subtract(optimizedCost), baselineCost)
                     : energyReductionRate;
-            BigDecimal mape = metricMape(schedulePlan, calculateMape(scheduleDetails, energyDetails));
-            BigDecimal er = metricEr(schedulePlan, calculateEr(energyDetails, dto.getObjectiveWeights()));
+            BigDecimal mape = null; // No aligned measured observations are supplied by these plan tables.
+            BigDecimal er = calculateEr(energyDetails, dto.getObjectiveWeights());
             plan.setCostReductionRate(scale(nonNegative(costReductionRate), 2));
             plan.setEnergyReductionRate(scale(nonNegative(energyReductionRate), 2));
             plan.setExecuteRate(er);
